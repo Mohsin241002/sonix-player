@@ -10,7 +10,8 @@
 // There are no fonts inside the binary. Everything is rendered through
 // FreeType from the faces shipped in /usr/resource/sonix/fonts:
 //
-//   default.otf   MiSans Regular -- Latin, Greek, Cyrillic, kana, full CJK
+//   inter-regular.ttf / inter-semibold.ttf   Inter interface faces
+//   default.otf   MiSans fallback -- Latin, Greek, Cyrillic, kana, full CJK
 //   bold.otf      optional bold weight for the headings; regular stands in
 //                 when it is not there
 //   korean.otf    Hangul, and the few Japanese marks MiSans lacks (the
@@ -23,7 +24,7 @@
 //
 // The last four each have a -bold file for the bold sizes, optional like
 // bold.otf. fonts_init() opens them once and builds one fallback chain per
-// size: default answers first, Korean, Thai and Arabic fill in what it lacks.
+// size: Inter answers first, MiSans, Korean, Thai and Arabic fill its gaps.
 // In Japanese, Rodin answers the CJK letters ahead of default (see fonts.c).
 // FreeType maps the files -- nothing is decoded up front -- and rendered
 // glyphs live in the shared FTC cache (LV_FREETYPE_CACHE_FT_GLYPH_CNT), so
@@ -51,6 +52,7 @@ extern lv_font_t font_ui_32;
 // The A and B letters on the Gearboy buttons, nothing else: on a 110 pixel
 // circle the regular weight is lost.
 extern lv_font_t font_ui_36_bold;
+extern lv_font_t font_ui_44_bold; // home heading
 // The letter shown in the middle of the screen while the A-Z list index is in
 // use: one letter at a time, and it has to read from a distance.
 extern lv_font_t font_ui_64_bold;

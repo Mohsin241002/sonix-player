@@ -41,8 +41,8 @@
 // notches read as a dotted line, not a scale. Finer sliders (Soundfield width,
 // 0.00 to 2.00 in steps of 0.05) go without.
 #define SLIDER_TICK_MAX_STEPS 16
-#define ROW_RADIUS 12 // Adwaita boxed-list corner radius
-#define ROW_GAP 8
+#define ROW_RADIUS 20
+#define ROW_GAP 10
 
 // Every page heading, row name and card name goes through this file, so the
 // tr() calls live here rather than in thirty call sites. A name that is not a
@@ -76,7 +76,7 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 	lv_obj_t *label = lv_label_create(screen);
 	lv_label_set_text(label, tr(text));
 	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_32, 0);
+	lv_obj_set_style_text_font(label, &font_ui_36_bold, 0);
 	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 
 	// Beside the back button, not above it: the two read as one header row.
@@ -86,7 +86,7 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 	// the end of the last line that fits, so a long album name would grow the
 	// header to two lines; pinning the height to one line makes it truncate
 	// instead.
-	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_32));
+	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_36_bold));
 	fit_title(label, cfg->screen_width - left - cfg->padding - CORNER_BTN_SIZE - 14);
 	lv_obj_align(label, LV_ALIGN_TOP_LEFT, left, cfg->top_bar_height + cfg->padding + 10);
 
@@ -161,7 +161,7 @@ static void fit_title(lv_obj_t *label, int width) {
 	// Down to 24, because headings such as "Opzioni di visualizzazione" do not
 	// fit at 26 either, and an ellipsis in a page title tells the reader
 	// nothing.
-	static lv_font_t *const STEPS[] = {&font_ui_32, &font_ui_28, &font_ui_26, &font_ui_24};
+	static lv_font_t *const STEPS[] = {&font_ui_36_bold, &font_ui_32, &font_ui_28, &font_ui_26, &font_ui_24};
 
 	// The text must be sized with the ellipsis out of the way: a
 	// LV_LABEL_LONG_DOT label does not keep the original string, so once LVGL
@@ -454,7 +454,13 @@ static void switch_tap_cb(lv_event_t *e) {
 
 lv_obj_t *settingsrow_switch(lv_obj_t *parent, lv_event_cb_t cb) {
 	lv_obj_t *sw = lv_switch_create(parent);
-	lv_obj_set_size(sw, 68, 36);
+	lv_obj_set_size(sw, 68, 40);
+	lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+	lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+	lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+	lv_obj_set_style_bg_color(sw, lv_color_white(), LV_PART_KNOB);
+	lv_obj_set_style_pad_all(sw, -3, LV_PART_KNOB);
+	lv_obj_set_style_anim_duration(sw, 160, 0);
 	// Not checkable: the state changes in switch_tap_cb instead of on RELEASED.
 	lv_obj_set_checkable(sw, false);
 	lv_obj_set_ext_click_area(sw, SWITCH_TOUCH_MARGIN);
@@ -786,7 +792,7 @@ lv_obj_t *settingsrow_toggle_pills(lv_obj_t *parent, const char *title, lv_event
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ROW_RADIUS, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
@@ -843,7 +849,7 @@ lv_obj_t *settingsrow_pills(lv_obj_t *parent, const char *title, lv_obj_t **pill
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ROW_RADIUS, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);

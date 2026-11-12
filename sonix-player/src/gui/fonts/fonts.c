@@ -41,6 +41,13 @@
 	{FONT_DIR "/" base ".ttf", FONT_DIR "/" base ".otf", FONT_DIR_FALLBACK "/" base ".ttf",                          \
 	 FONT_DIR_FALLBACK "/" base ".otf", NULL}
 
+// Inter supplies the Latin interface. The original MiSans faces remain in
+// the chain immediately behind it: Inter does not cover the full CJK range.
+#define INTER_FILES(name)                                                                                             \
+	{FONT_DIR "/" name, FONT_DIR_FALLBACK "/" name, NULL}
+
+static const char *const FONT_INTER_REGULAR_FILES[] = INTER_FILES("inter-regular.ttf");
+static const char *const FONT_INTER_SEMIBOLD_FILES[] = INTER_FILES("inter-semibold.ttf");
 static const char *const FONT_DEFAULT_FILES[] = FACE_FILES("default");
 static const char *const FONT_BOLD_FILES[] = FACE_FILES("bold");
 
@@ -107,6 +114,7 @@ lv_font_t font_ui_26;
 lv_font_t font_ui_28;
 lv_font_t font_ui_32;
 lv_font_t font_ui_36_bold;
+lv_font_t font_ui_44_bold;
 lv_font_t font_ui_64_bold;
 lv_font_t font_ui_72;
 
@@ -121,7 +129,7 @@ static const ui_font_t ui_fonts[] = {
 	{&font_ui_20, 20, false}, {&font_ui_22, 22, false}, {&font_ui_24, 24, false},
 	{&font_ui_26, 26, false}, {&font_ui_28, 28, false}, {&font_ui_32, 32, false},
 	{&font_ui_72, 72, false}, {&font_ui_20_bold, 20, true}, {&font_ui_22_bold, 22, true}, {&font_ui_24_bold, 24, true}, {&font_ui_36_bold, 36, true},
-	{&font_ui_64_bold, 64, true},
+	{&font_ui_44_bold, 44, true}, {&font_ui_64_bold, 64, true},
 };
 
 #define UI_FONT_COUNT (sizeof(ui_fonts) / sizeof(ui_fonts[0]))
@@ -168,6 +176,8 @@ static bool set_built[2];
 
 static const char *regular_file;
 static const char *bold_file;
+static const char *legacy_regular_file;
+static const char *legacy_bold_file;
 
 static lv_font_t *open_face(const char *path, int size) {
 	if (access(path, R_OK) != 0) {
@@ -238,8 +248,10 @@ static lv_font_t *open_chain(const ui_font_t *ui, int size) {
 	// file when the firmware has one; the regular stands in otherwise,
 	// which reads fine at heading sizes even if it is not actually heavier.
 	lv_font_t *head = NULL;
+	const char *primary_file = regular_file;
 	if (ui->bold && bold_file) {
 		head = open_face(bold_file, size);
+		if (head) primary_file = bold_file;
 	}
 	if (!head) {
 		head = open_face(regular_file, size);
@@ -265,6 +277,18 @@ static lv_font_t *open_chain(const ui_font_t *ui, int size) {
 		tail->fallback = rodin;
 		tail = rodin;
 		japanese.used = true;
+	}
+
+	// Inter is the primary face, while MiSans remains available for glyphs
+	// outside Inter's coverage (notably CJK). Put it after Rodin so Japanese
+	// kanji keep their existing face preference.
+	const char *legacy_file = ui->bold && legacy_bold_file ? legacy_bold_file : legacy_regular_file;
+	if (legacy_file && strcmp(legacy_file, primary_file) != 0) {
+		lv_font_t *legacy = open_face(legacy_file, size);
+		if (legacy) {
+			tail->fallback = legacy;
+			tail = legacy;
+		}
 	}
 
 	for (size_t i = 0; i < SCRIPT_COUNT; i++) {
@@ -326,8 +350,16 @@ static bool build_set(bool large) {
 }
 
 bool fonts_init(void) {
-	regular_file = first_present(FONT_DEFAULT_FILES);
-	bold_file = first_present(FONT_BOLD_FILES);
+	legacy_regular_file = first_present(FONT_DEFAULT_FILES);
+	legacy_bold_file = first_present(FONT_BOLD_FILES);
+	regular_file = first_present(FONT_INTER_REGULAR_FILES);
+	if (!regular_file) {
+		regular_file = legacy_regular_file;
+	}
+	bold_file = first_present(FONT_INTER_SEMIBOLD_FILES);
+	if (!bold_file) {
+		bold_file = legacy_bold_file;
+	}
 	for (size_t i = 0; i < SCRIPT_COUNT; i++) {
 		scripts[i].regular = first_present(scripts[i].regular_files);
 		scripts[i].bold = first_present(scripts[i].bold_files);

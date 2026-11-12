@@ -13,40 +13,34 @@ lv_style_t theme_style_card_pressed;
 lv_style_t theme_style_text;
 lv_style_t theme_style_text_dim;
 lv_style_t theme_style_icon;
+lv_style_t theme_style_nav_icon;
 lv_style_t theme_style_switch;		   // switch track, off state
 lv_style_t theme_style_switch_checked; // switch indicator, on state
 lv_style_t theme_style_accent_bg;	   // anything that must follow the accent
 lv_style_t theme_style_slider_track;   // a slider's unfilled part
 
-// GNOME Adwaita (libadwaita) colours, dark variant: window #242424, cards
-// #303030 (white at 8%% over the window), accent blue #3584e4. Secondary text
-// is white at 55%%, flattened against the card colour.
+// Neutral surfaces keep artwork and controls legible on the small LCD.
 static theme_palette_t palette_dark = {
-	.screen_bg = LV_COLOR_MAKE(36, 36, 36),
-	.surface = LV_COLOR_MAKE(48, 48, 48),
-	.surface_pressed = LV_COLOR_MAKE(64, 64, 64),
-	.panel = LV_COLOR_MAKE(30, 30, 30),
-	.cover_bg = LV_COLOR_MAKE(30, 30, 30),
-	.text_primary = LV_COLOR_MAKE(255, 255, 255),
-	.text_secondary = LV_COLOR_MAKE(160, 160, 160),
-	.accent = LV_COLOR_MAKE(53, 132, 228),
+	.screen_bg = LV_COLOR_MAKE(0, 0, 0),
+	.surface = LV_COLOR_MAKE(32, 32, 32),
+	.surface_pressed = LV_COLOR_MAKE(58, 58, 60),
+	.panel = LV_COLOR_MAKE(0, 0, 0),
+	.cover_bg = LV_COLOR_MAKE(32, 32, 32),
+	.text_primary = LV_COLOR_MAKE(245, 245, 247),
+	.text_secondary = LV_COLOR_MAKE(160, 160, 168),
+	.accent = LV_COLOR_MAKE(10, 132, 255),
 	.dark = true,
 };
 
-// Adwaita light: window #fafafa, cards white, pressed = black at 8%%, text
-// black at 80%%. The accent is the same #3584e4 in both variants.
 static theme_palette_t palette_light = {
-	// The window is pushed further from white than stock Adwaita's #fafafa:
-	// on this panel white cards on a #fafafa window are indistinguishable, so
-	// the window is a light grey and the pressed state a step deeper.
-	.screen_bg = LV_COLOR_MAKE(236, 237, 240),
+	.screen_bg = LV_COLOR_MAKE(247, 247, 247),
 	.surface = LV_COLOR_MAKE(255, 255, 255),
-	.surface_pressed = LV_COLOR_MAKE(221, 223, 228),
-	.panel = LV_COLOR_MAKE(255, 255, 255),
-	.cover_bg = LV_COLOR_MAKE(224, 226, 230),
-	.text_primary = LV_COLOR_MAKE(50, 50, 50),
-	.text_secondary = LV_COLOR_MAKE(115, 115, 115),
-	.accent = LV_COLOR_MAKE(53, 132, 228),
+	.surface_pressed = LV_COLOR_MAKE(229, 229, 234),
+	.panel = LV_COLOR_MAKE(247, 247, 247),
+	.cover_bg = LV_COLOR_MAKE(229, 229, 234),
+	.text_primary = LV_COLOR_MAKE(28, 28, 30),
+	.text_secondary = LV_COLOR_MAKE(99, 99, 102),
+	.accent = LV_COLOR_MAKE(0, 122, 255),
 	.dark = false,
 };
 
@@ -66,15 +60,14 @@ static theme_palette_t tinted;
 
 static theme_palette_t *active = &palette_dark;
 
-// The accent presets, Adwaita's named accents, ordered as requested: blue
-// (the default), then warm to cool -- orange, yellow, green, purple, pink.
+// Stable preset order preserves saved accent choices.
 static const lv_color_t ACCENT_COLORS[THEME_ACCENT_COUNT] = {
-	LV_COLOR_MAKE(53, 132, 228), // blue (#3584e4, the default)
-	LV_COLOR_MAKE(255, 120, 0),  // orange (#ff7800)
-	LV_COLOR_MAKE(229, 165, 10), // yellow (#e5a50a)
-	LV_COLOR_MAKE(46, 194, 126), // green (#2ec27e)
-	LV_COLOR_MAKE(145, 65, 172), // purple (#9141ac)
-	LV_COLOR_MAKE(213, 97, 153), // pink (#d56199)
+	LV_COLOR_MAKE(10, 132, 255),
+	LV_COLOR_MAKE(255, 159, 10),
+	LV_COLOR_MAKE(255, 214, 10),
+	LV_COLOR_MAKE(48, 209, 88),
+	LV_COLOR_MAKE(191, 90, 242),
+	LV_COLOR_MAKE(255, 55, 95),
 };
 static int accent_index;
 
@@ -180,15 +173,20 @@ static void apply_palette(void) {
 	lv_style_set_text_color(&theme_style_text_dim, active->text_secondary);
 
 	lv_style_set_image_recolor(&theme_style_icon, active->text_primary);
+	lv_style_set_image_recolor(&theme_style_nav_icon, active->accent);
 
 	lv_style_set_bg_color(&theme_style_switch, active->surface_pressed);
-	lv_style_set_bg_color(&theme_style_switch_checked, active->accent);
+	lv_style_set_bg_color(&theme_style_switch_checked, lv_color_make(48, 180, 83));
 
 	lv_style_set_bg_color(&theme_style_accent_bg, active->accent);
 	lv_style_set_bg_color(&theme_style_slider_track, active->text_secondary);
 }
 
+static const lv_style_prop_t press_properties[] = {LV_STYLE_BG_COLOR, LV_STYLE_BG_OPA, 0};
+static lv_style_transition_dsc_t press_transition;
+
 void theme_init(void) {
+	lv_style_transition_dsc_init(&press_transition, press_properties, lv_anim_path_ease_out, 100, 0, NULL);
 	lv_style_init(&theme_style_screen);
 	lv_style_set_bg_opa(&theme_style_screen, LV_OPA_COVER);
 
@@ -197,6 +195,9 @@ void theme_init(void) {
 
 	lv_style_init(&theme_style_card);
 	lv_style_set_bg_opa(&theme_style_card, LV_OPA_COVER);
+	lv_style_set_border_width(&theme_style_card, 0);
+	lv_style_set_shadow_width(&theme_style_card, 0);
+	lv_style_set_transition(&theme_style_card, &press_transition);
 
 	lv_style_init(&theme_style_card_pressed);
 	lv_style_set_bg_opa(&theme_style_card_pressed, LV_OPA_COVER);
@@ -208,6 +209,8 @@ void theme_init(void) {
 	lv_style_init(&theme_style_text);
 	lv_style_init(&theme_style_text_dim);
 
+	lv_style_init(&theme_style_nav_icon);
+	lv_style_set_image_recolor_opa(&theme_style_nav_icon, LV_OPA_COVER);
 	lv_style_init(&theme_style_icon);
 	lv_style_set_image_recolor_opa(&theme_style_icon, LV_OPA_COVER);
 

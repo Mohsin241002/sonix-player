@@ -77,19 +77,18 @@ static void text_size_cb(lv_event_t *e) {
 	refresh_text_size_pills();
 }
 
-// Paints the pair: the active choice is the filled accent button, the other a
-// quiet neutral, like libadwaita's suggested-action beside a regular button.
+// Segmented choices share a quiet track; the selected segment is raised by
+// contrast alone, so there are no blurred layers or full-colour pills.
+static void segment_active(lv_obj_t *button, bool selected) {
+	lv_obj_set_style_bg_color(lv_obj_get_parent(button), theme()->screen_bg, 0);
+	lv_obj_set_style_bg_color(button, selected ? theme()->surface : theme()->screen_bg, 0);
+	lv_obj_set_style_text_color(lv_obj_get_child(button, 0),
+		selected ? theme()->text_primary : theme()->text_secondary, 0);
+}
+
 static void refresh_buttons(void) {
-	bool dark = theme_is_dark();
-
-	lv_obj_t *on = dark ? btn_dark : btn_light;
-	lv_obj_t *off = dark ? btn_light : btn_dark;
-
-	lv_obj_set_style_bg_color(on, theme()->accent, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(on, 0), lv_color_white(), 0);
-
-	lv_obj_set_style_bg_color(off, theme()->surface_pressed, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(off, 0), theme()->text_primary, 0);
+	segment_active(btn_dark, theme_is_dark());
+	segment_active(btn_light, !theme_is_dark());
 }
 
 // The active circle wears a ring in the text colour; the rest sit flat.
@@ -127,20 +126,10 @@ static lv_obj_t *make_accent_circle(lv_obj_t *parent, int index) {
 	return btn;
 }
 
-// Paints the clock-position pills the same way: accent on the active one.
 static void refresh_clock_buttons(void) {
 	int active = (int)config_get_int("screen", "clock_pos", TOPBAR_CLOCK_CENTER);
 	for (int i = 0; i < 4; i++) {
-		if (!btn_clock[i]) {
-			continue;
-		}
-		if (i == active) {
-			lv_obj_set_style_bg_color(btn_clock[i], theme()->accent, 0);
-			lv_obj_set_style_text_color(lv_obj_get_child(btn_clock[i], 0), lv_color_white(), 0);
-		} else {
-			lv_obj_set_style_bg_color(btn_clock[i], theme()->surface_pressed, 0);
-			lv_obj_set_style_text_color(lv_obj_get_child(btn_clock[i], 0), theme()->text_primary, 0);
-		}
+		if (btn_clock[i]) segment_active(btn_clock[i], i == active);
 	}
 }
 
@@ -154,9 +143,10 @@ static void clock_pos_cb(lv_event_t *e) {
 
 static lv_obj_t *make_clock_choice(lv_obj_t *parent, const char *text, int pos) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
-	lv_obj_set_style_pad_hor(btn, 14, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, 52);
+	lv_obj_set_flex_grow(btn, 1);
+	lv_obj_set_style_pad_hor(btn, 10, 0);
+	lv_obj_set_style_radius(btn, 10, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_add_event_cb(btn, clock_pos_cb, LV_EVENT_CLICKED, (void *)(intptr_t)pos);
@@ -177,9 +167,10 @@ static void pick_cb(lv_event_t *e) {
 
 static lv_obj_t *make_choice(lv_obj_t *parent, const char *text, bool dark) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
-	lv_obj_set_style_pad_hor(btn, 34, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, 52);
+	lv_obj_set_flex_grow(btn, 1);
+	lv_obj_set_style_pad_hor(btn, 20, 0);
+	lv_obj_set_style_radius(btn, 10, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_add_event_cb(btn, pick_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)dark);
@@ -200,7 +191,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, 20, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
@@ -216,10 +207,11 @@ void appearance_init(gui_config_t *cfg) {
 
 	lv_obj_t *row = lv_obj_create(card);
 	lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(row, 0, 0);
+	lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+	lv_obj_set_style_radius(row, 14, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, 14, 0);
+	lv_obj_set_style_pad_all(row, 4, 0);
+	lv_obj_set_style_pad_gap(row, 4, 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -232,7 +224,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_width(clock_card, lv_pct(100));
 	lv_obj_set_height(clock_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(clock_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(clock_card, 12, 0);
+	lv_obj_set_style_radius(clock_card, 20, 0);
 	lv_obj_set_style_border_width(clock_card, 0, 0);
 	lv_obj_set_style_shadow_width(clock_card, 0, 0);
 	lv_obj_set_style_pad_all(clock_card, 20, 0);
@@ -249,10 +241,11 @@ void appearance_init(gui_config_t *cfg) {
 
 	lv_obj_t *clock_row = lv_obj_create(clock_card);
 	lv_obj_set_size(clock_row, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(clock_row, 0, 0);
+	lv_obj_set_style_bg_opa(clock_row, LV_OPA_COVER, 0);
+	lv_obj_set_style_radius(clock_row, 14, 0);
 	lv_obj_set_style_border_width(clock_row, 0, 0);
-	lv_obj_set_style_pad_all(clock_row, 0, 0);
-	lv_obj_set_style_pad_gap(clock_row, 10, 0);
+	lv_obj_set_style_pad_all(clock_row, 4, 0);
+	lv_obj_set_style_pad_gap(clock_row, 4, 0);
 	lv_obj_set_scrollable(clock_row, false);
 	// Wrapped, not a single line: four pills of translated words do not fit
 	// across 480 pixels in every language, and one that does not fit is drawn
@@ -270,7 +263,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_width(accent_card, lv_pct(100));
 	lv_obj_set_height(accent_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(accent_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(accent_card, 12, 0);
+	lv_obj_set_style_radius(accent_card, 20, 0);
 	lv_obj_set_style_border_width(accent_card, 0, 0);
 	lv_obj_set_style_shadow_width(accent_card, 0, 0);
 	lv_obj_set_style_pad_all(accent_card, 20, 0);

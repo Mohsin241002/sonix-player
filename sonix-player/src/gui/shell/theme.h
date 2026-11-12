@@ -29,6 +29,7 @@ extern lv_style_t theme_style_card_pressed;
 extern lv_style_t theme_style_text;
 extern lv_style_t theme_style_text_dim;
 extern lv_style_t theme_style_icon;
+extern lv_style_t theme_style_nav_icon; // accent glyphs for navigation rows
 extern lv_style_t theme_style_switch;
 extern lv_style_t theme_style_switch_checked; // image_recolor for monochrome icons
 

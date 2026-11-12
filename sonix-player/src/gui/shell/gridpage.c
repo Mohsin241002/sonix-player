@@ -14,8 +14,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/device/usb.h"
 
-#define GRID_GAP 14
-#define TILE_RADIUS 12 // Adwaita card radius
+#define ROW_MIN_HEIGHT 80
 
 static void unavailable_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active()) {
@@ -60,38 +59,59 @@ void gridpage_set_tile(lv_obj_t *grid, int index, const lv_image_dsc_t *icon, co
 	}
 }
 
-static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int height) {
+// Keep the historical grid API so saved menu order and all existing actions
+// continue to work. Destinations now read as a single, scrollable table.
+static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, bool divider) {
 	lv_obj_t *tile = lv_btn_create(grid);
-	lv_obj_set_size(tile, width, height);
+	lv_obj_set_size(tile, width, LV_SIZE_CONTENT);
+	lv_obj_set_style_min_height(tile, ROW_MIN_HEIGHT, 0);
 	lv_obj_add_style(tile, &theme_style_card, 0);
 	lv_obj_add_style(tile, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(tile, TILE_RADIUS, 0);
-	lv_obj_set_style_shadow_width(tile, 0, 0);
-	lv_obj_set_style_pad_all(tile, 8, 0);
-
-	// Presses bubble up to the grid so a swipe can start on a tile: the whole
-	// page has to be draggable, not just the gaps between the tiles.
+	lv_obj_set_style_bg_opa(tile, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, LV_STATE_PRESSED);
+	lv_obj_set_style_radius(tile, 12, 0);
+	lv_obj_set_style_pad_hor(tile, 12, 0);
+	lv_obj_set_style_pad_ver(tile, 18, 0);
+	lv_obj_set_style_pad_gap(tile, 18, 0);
 	lv_obj_set_event_bubble(tile, true);
-
-	lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(tile, 8, 0);
+	lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(tile, false);
 
-	// The tile artwork keeps its own colours, so unlike the interface glyphs it
-	// is not run through the theme's recolour.
 	lv_obj_t *icon = lv_image_create(tile);
 	lv_image_set_src(icon, entry->icon);
+	lv_obj_set_size(icon, 32, 32);
+	lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CONTAIN);
+	if (entry->icon != &icon_menu_tidal && entry->icon != &icon_menu_qobuz &&
+		entry->icon != &icon_menu_flappy_bird) {
+		lv_obj_add_style(icon, &theme_style_nav_icon, 0);
+	}
 
-	// The caption wraps rather than running out of the tile: a translated label
-	// such as "Album-Interpreten" does not fit on one line. Centred, because a
-	// tile is read as a block under its picture.
 	lv_obj_t *label = lv_label_create(tile);
 	lv_label_set_text(label, tr(entry->label));
 	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_24_bold, 0);
-	lv_obj_set_width(label, lv_pct(100));
-	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_set_style_text_font(label, &font_ui_28, 0);
+	lv_obj_set_width(label, 0);
+	lv_obj_set_flex_grow(label, 1);
+	lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+
+	lv_obj_t *chevron = lv_image_create(tile);
+	lv_image_set_src(chevron, &icon_chevron_right);
+	lv_obj_set_size(chevron, 20, 20);
+	lv_image_set_inner_align(chevron, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_add_style(chevron, &theme_style_icon, 0);
+	lv_obj_set_style_image_opa(chevron, LV_OPA_40, 0);
+
+	if (divider) {
+		lv_obj_t *line = lv_obj_create(tile);
+		lv_obj_remove_style_all(line);
+		lv_obj_add_style(line, &theme_style_slider_track, 0);
+		lv_obj_set_style_bg_opa(line, LV_OPA_20, 0);
+		lv_obj_set_size(line, width - 62, 1);
+		lv_obj_set_floating(line, true);
+		lv_obj_set_clickable(line, false);
+		lv_obj_align(line, LV_ALIGN_BOTTOM_RIGHT, 12, 18);
+	}
 
 	if (entry->target) {
 		lv_obj_add_event_cb(tile, switch_screen_cb, LV_EVENT_CLICKED, *entry->target);
@@ -111,15 +131,12 @@ void gridpage_set_entries(lv_obj_t *grid, gui_config_t *cfg, const grid_entry_t 
 	}
 	lv_obj_clean(grid);
 
-	int top = clear_corner_buttons ? settingsrow_content_top(cfg) : cfg->top_bar_height;
-	int usable_w = cfg->screen_width - (2 * cfg->padding);
-	int usable_h = (cfg->screen_height - top) - (2 * cfg->padding);
-
-	int tile_w = (usable_w - (columns - 1) * GRID_GAP) / columns;
-	int tile_h = (usable_h - (rows - 1) * GRID_GAP) / rows;
-
+	(void)columns;
+	(void)rows;
+	(void)clear_corner_buttons;
+	int row_width = cfg->screen_width - 2 * cfg->padding;
 	for (int i = 0; i < count; i++) {
-		add_tile(grid, &entries[i], tile_w, tile_h);
+		add_tile(grid, &entries[i], row_width, i + 1 < count);
 	}
 }
 
@@ -136,14 +153,10 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 	lv_obj_set_style_border_width(grid, 0, 0);
 	lv_obj_set_style_radius(grid, 0, 0);
 	lv_obj_set_style_pad_all(grid, cfg->padding, 0);
-	lv_obj_set_style_pad_gap(grid, GRID_GAP, 0);
-	lv_obj_set_scrollable(grid, false);
+	lv_obj_set_style_pad_gap(grid, 0, 0);
+	gridpage_set_scrolling(grid);
 
-	lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-	// START on the main axis, not CENTER: the tile size is computed for a full
-	// `columns` x `rows` grid, so a page with fewer entries reads as that grid
-	// with empty places. Centring would drift an odd tile into the middle of
-	// its row, giving that page a shape no other one has.
+	lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 
 	gridpage_set_entries(grid, cfg, entries, count, columns, rows, clear_corner_buttons);

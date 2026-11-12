@@ -1,3 +1,4 @@
+#include "src/gui/shell/main_menu.h"
 #include "player.h"
 
 #include <pthread.h>
@@ -3485,6 +3486,10 @@ static void cover_poll_start(void) {
 // anything else that wants to draw it (the screensaver). NULL while a track
 // has no cover or its decode is still in flight -- never a stale pointer:
 // refresh_cover() zeroes both before the buffers are freed.
+uint64_t player_cover_identity(void) {
+	return current_cover.pixels && !cover_request_outstanding && cover_id_state == COVER_ID_IDLE ? cover_shown_id : 0;
+}
+
 const lv_image_dsc_t *player_cover_image(void) { return current_cover.pixels ? &current_cover.dsc : NULL; }
 
 const lv_image_dsc_t *player_backdrop_image(void) {
@@ -4144,6 +4149,7 @@ static void update_progress(void) {
 
 	device_state_t state;
 	device_state_get(&state);
+	main_menu_refresh_player(&state);
 
 	// The live source moves under the player: the station's own name comes
 	// with the connection, the on-air title arrives later and keeps changing,

@@ -44,6 +44,7 @@ OUT_H = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons.h")
 # button, 46 px inside the control centre's 88 px circles, 56 px for a dialog
 # glyph, 96-160 px for a placeholder standing in for missing artwork.
 ICONS = [
+    ("apps.svg", "apps", 32),
     ("chevron-left.svg", "chevron_left", 36),
     ("chevron-right.svg", "chevron_right", 36),
     # Marks the chosen row in a single-choice list, in place of the chevron.
@@ -381,17 +382,45 @@ ICONS = [
     # that confirms a save.
     ("bookmark.svg", "bookmark", 36),
     ("bookmark-check.svg", "bookmark_check", 64),
+    # Main and section menu icons use the same monochrome 32 px glyphs as
+    # the rest of the interface, with their existing C names kept stable.
+    ("music-2.svg", "menu_music", 32),
+    ("list-music.svg", "menu_all", 32),
+    ("album.svg", "menu_album", 32),
+    ("artist.svg", "menu_artist", 32),
+    ("artist-album.svg", "menu_album_artist", 32),
+    ("genre.svg", "menu_genre", 32),
+    ("year-arrow-down.svg", "menu_year", 32),
+    ("star.svg", "menu_favourites", 32),
+    ("history.svg", "menu_most_played", 32),
+    ("folder-open.svg", "menu_explorer", 32),
+    ("files-playlist.svg", "menu_playlist", 32),
+    ("audio-waveform.svg", "menu_streaming", 32),
+    ("wifi.svg", "menu_wireless", 32),
+    ("wifi.svg", "menu_wifi_settings", 32),
+    ("bluetooth.svg", "menu_bluetooth", 32),
+    ("airplay-status.svg", "menu_airplay", 32),
+    ("wifi-transfer-quick.svg", "menu_wifi_transfer", 32),
+    ("sonixlink-status.svg", "menu_sonixlink", 32),
+    ("dlna-quick.svg", "menu_dlna", 32),
+    ("radio-player.svg", "menu_radio", 32),
+    ("podcast-list.svg", "menu_podcast", 32),
+    ("book-headphones.svg", "menu_audiobooks", 32),
+    ("files-audiobook.svg", "menu_audiobook_library", 32),
+    ("list-ordered.svg", "menu_audiobook_series", 32),
+    ("artist.svg", "menu_audiobook_author", 32),
+    ("play.svg", "menu_audiobook_continue", 32),
+    ("music-settings.svg", "menu_settings", 32),
+    ("ellipsis-vertical.svg", "menu_more", 32),
+    ("usb-audio-out.svg", "menu_dac", 32),
+    ("files-gamepad.svg", "menu_gearboy", 32),
+    ("files-book.svg", "menu_books", 32),
+    ("folder-open.svg", "menu_file_explorer", 32),
+    ("audio-waveform.svg", "menu_metronome", 32),
     # The heart that jumps out when the coffee QR code is closed. 160 px
     # because the animation grows it to 1:1 and no further.
     ("heart.svg", "heart", 160),
 ]
-
-# Main menu and section tiles, which keep their own colours and are therefore
-# listed separately from the recolourable glyphs above. Stored at exactly the
-# size they are drawn at: LVGL does not scale them, so a larger bitmap would be
-# weight in the binary and nothing else.
-MAIN_MENU_ICON_SIZE = 128
-SECTION_ICON_SIZE = 112
 
 COLOR_ICONS = [
     # The quality badges under a track's title. Here rather than above because
@@ -407,46 +436,11 @@ COLOR_ICONS = [
     ("sonixlink-icon-page.png", "sonixlink_page", 200),
     ("bluetooth-receiver-icon-page.png", "bluetooth_receiver_page", 200),
 
-    ("music.png", "menu_music", MAIN_MENU_ICON_SIZE),
-    # The Musica section's own grid.
-    ("all.png", "menu_all", SECTION_ICON_SIZE),
-    ("album.png", "menu_album", SECTION_ICON_SIZE),
-    ("artist.png", "menu_artist", SECTION_ICON_SIZE),
-    ("album_artist.png", "menu_album_artist", SECTION_ICON_SIZE),
-    ("genre.png", "menu_genre", SECTION_ICON_SIZE),
-    ("year.png", "menu_year", SECTION_ICON_SIZE),
-    ("favourites.png", "menu_favourites", SECTION_ICON_SIZE),
-    ("most-played.png", "menu_most_played", SECTION_ICON_SIZE),
-    ("explorer.png", "menu_explorer", SECTION_ICON_SIZE),
-    ("playlist.png", "menu_playlist", SECTION_ICON_SIZE),
-    ("streaming.png", "menu_streaming", MAIN_MENU_ICON_SIZE),
-    ("wireless.png", "menu_wireless", MAIN_MENU_ICON_SIZE),
-    # The Wireless section's own grid.
-    ("wifi-settings.png", "menu_wifi_settings", SECTION_ICON_SIZE),
-    ("bluetooth.png", "menu_bluetooth", SECTION_ICON_SIZE),
-    ("airplay.png", "menu_airplay", SECTION_ICON_SIZE),
-    ("wifi-transfer.png", "menu_wifi_transfer", SECTION_ICON_SIZE),
-    ("sonixlink.png", "menu_sonixlink", SECTION_ICON_SIZE),
-    ("dlna.png", "menu_dlna", SECTION_ICON_SIZE),
     # The Streaming section's own grid.
-    ("tidal.png", "menu_tidal", SECTION_ICON_SIZE),
-    ("qobuz.png", "menu_qobuz", SECTION_ICON_SIZE),
-    ("radio.png", "menu_radio", SECTION_ICON_SIZE),
-    ("podcast.png", "menu_podcast", SECTION_ICON_SIZE),
-    ("audiobooks.png", "menu_audiobooks", MAIN_MENU_ICON_SIZE),
-    ("audiobook-library.png", "menu_audiobook_library", SECTION_ICON_SIZE),
-    ("audiobook-series.png", "menu_audiobook_series", SECTION_ICON_SIZE),
-    ("audiobook-author.png", "menu_audiobook_author", SECTION_ICON_SIZE),
-    ("audiobook-continue.png", "menu_audiobook_continue", SECTION_ICON_SIZE),
-    ("settings.png", "menu_settings", MAIN_MENU_ICON_SIZE),
-    ("more.png", "menu_more", MAIN_MENU_ICON_SIZE),
-    # What lives inside "More", at section size.
-    ("dac.png", "menu_dac", SECTION_ICON_SIZE),
-    ("gearboy.png", "menu_gearboy", SECTION_ICON_SIZE),
-    ("flappy-bird.png", "menu_flappy_bird", SECTION_ICON_SIZE),
-    ("ebook.png", "menu_books", SECTION_ICON_SIZE),
-    ("file-explorer.png", "menu_file_explorer", SECTION_ICON_SIZE),
-    ("metronome.png", "menu_metronome", SECTION_ICON_SIZE),
+    ("tidal.png", "menu_tidal", 96),
+    ("qobuz.png", "menu_qobuz", 96),
+    # Original game artwork remains in colour.
+    ("flappy-bird.png", "menu_flappy_bird", 96),
 
     # The service badges in the player's top right corner, where the radio puts
     # its LIVE mark. They sit over the cover art, so these are the outlined

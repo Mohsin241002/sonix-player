@@ -7,8 +7,8 @@
 
 #include "lvgl/lvgl.h"
 
-// The tiled page layout, shared by the main menu and the Music section so the
-// two look and behave identically.
+// Destination rows shared by the library and utility sections. The historical
+// grid API and saved tile identifiers remain compatible with existing callers.
 
 typedef struct {
 	const char *label;
@@ -26,13 +26,10 @@ typedef struct {
 	void (*action)(void);
 } grid_entry_t;
 
-// Fills `screen` with a `columns` x `rows` grid of tiles sized from the config.
-// The grid is also a surface the player can be dragged in from, including from
-// the tiles themselves.
-// `clear_corner_buttons` starts the grid below the floating back button and
-// any icon in the opposite corner, so the cards never sit under them.
-// Repaints one tile in place: its picture and its caption, so a page whose
-// tiles change does not have to build its grid again.
+// Builds a scrollable, one-column destination list. columns/rows remain in
+// the signature for source compatibility and do not determine the row size.
+// clear_corner_buttons reserves the existing header and back-button area.
+// Updating an entry preserves its action and position.
 void gridpage_set_tile(lv_obj_t *grid, int index, const lv_image_dsc_t *icon, const char *label);
 
 lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t *entries, int count, int columns, int rows,
@@ -43,8 +40,7 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 void gridpage_set_entries(lv_obj_t *grid, gui_config_t *cfg, const grid_entry_t *entries, int count, int columns,
 						  int rows, bool clear_corner_buttons);
 
-// Lets a grid built with more entries than `columns` x `rows` scroll to the
-// rest, the tiles keeping the size that grid gives them.
+// Enables vertical scrolling; destination lists do this by default.
 void gridpage_set_scrolling(lv_obj_t *grid);
 
 // Shows the scrollbar of a grid that scrolls for a moment, so a page whose
