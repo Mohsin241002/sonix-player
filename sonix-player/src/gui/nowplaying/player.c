@@ -66,6 +66,12 @@ lv_obj_t *player_screen;
 static lv_obj_t *player_menu;
 static lv_obj_t *play_btn;
 static lv_obj_t *play_btn_icon;
+static bool play_over_cover;
+// Transport glyphs are drawn plainly, without a disc behind Play: white over
+// artwork and in the dark theme, the primary text colour otherwise.
+static lv_color_t play_glyph_color(void) {
+	return play_over_cover || theme()->dark ? lv_color_white() : theme()->text_primary;
+}
 static lv_obj_t *song_title_label;
 static lv_obj_t *song_artist_label;
 static lv_obj_t *format_label; // "16/44.1 FLAC", right of the artist line
@@ -267,8 +273,8 @@ static int cover_box_w, cover_box_h;   // the artwork spans the full screen widt
 // accent-coloured body rather than a second object, so it costs nothing and
 // follows the knob on its own.
 #define PROGRESS_TRACK_HEIGHT 10 // as thick as every other slider
-#define PROGRESS_KNOB_GROW 9	 // how far the knob grows past the track
-#define PROGRESS_KNOB_RING 5
+#define PROGRESS_KNOB_GROW 4	 // how far the knob grows past the track
+#define PROGRESS_KNOB_RING 0
 
 // How the shape of the track is drawn, and how much room it gets. The bars are
 // wide and well apart with rounded ends rather than a comb of hairlines: at
@@ -706,18 +712,16 @@ static sleeptimer_kind_t sleeptimer_kind_playing(void) {
 static void apply_playback_status(audio_status_t status) {
 	bool playing = (status == AUDIO_STATUS_PLAYING);
 
-	// The glyph is the accent colour, always: play and pause are the same
-	// control in two states. Only the disc under it changes (see
-	// set_over_cover): white over artwork and in the dark theme, dark in the
-	// light theme when there is no cover to stand out against.
+	// Play and pause are one plain glyph in two states, coloured by
+	// play_glyph_color(); there is no disc behind it.
 	//
 	// On a live stream there is no pause -- stopping and starting again does
 	// not resume, it reconnects -- so the button says stop while it is on.
 	// Stopped, it goes back to play: the station stays loaded, and pressing
 	// it opens a fresh connection to the same one.
 	lv_image_set_src(play_btn_icon,
-					 live_mode ? (playing ? &icon_stop : &icon_play) : (playing ? &icon_pause : &icon_play));
-	lv_obj_set_style_image_recolor(play_btn_icon, chrome_accent(), 0);
+					 live_mode ? (playing ? &icon_stop : &icon_play_large) : (playing ? &icon_pause_large : &icon_play_large));
+	lv_obj_set_style_image_recolor(play_btn_icon, play_glyph_color(), 0);
 	lv_obj_set_style_image_recolor_opa(play_btn_icon, LV_OPA_COVER, 0);
 
 	// Keep polling either way, just less often when nothing is playing. The
@@ -1001,12 +1005,13 @@ static void set_over_cover(bool on) {
 	// light theme with no cover -- a white disc on a near-white panel is
 	// invisible.
 	if (play_btn) {
-		bool white_disc = on || theme()->dark;
-		lv_obj_set_style_bg_color(play_btn, white_disc ? lv_color_white() : theme()->surface_pressed, 0);
-		lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
+		play_over_cover = on;
+		lv_obj_set_style_bg_color(play_btn, play_glyph_color(), 0);
+		lv_obj_set_style_bg_opa(play_btn, LV_OPA_TRANSP, 0);
+		lv_obj_set_style_bg_opa(play_btn, LV_OPA_20, LV_STATE_PRESSED);
 	}
 	if (play_btn_icon) {
-		lv_obj_set_style_image_recolor(play_btn_icon, chrome_accent(), 0);
+		lv_obj_set_style_image_recolor(play_btn_icon, play_glyph_color(), 0);
 		lv_obj_set_style_image_recolor_opa(play_btn_icon, LV_OPA_COVER, 0);
 	}
 
@@ -1124,7 +1129,7 @@ static void lyrics_repaint_lit(void);
 // moment can have moved: the play/pause disc and the repeat/shuffle mode.
 static void paint_transport_tint(void) {
 	if (play_btn_icon) {
-		lv_obj_set_style_image_recolor(play_btn_icon, chrome_accent(), 0);
+		lv_obj_set_style_image_recolor(play_btn_icon, play_glyph_color(), 0);
 		lv_obj_set_style_image_recolor_opa(play_btn_icon, LV_OPA_COVER, 0);
 	}
 	if (repeat_btn_icon) {
@@ -1134,7 +1139,7 @@ static void paint_transport_tint(void) {
 	// The progress bar, which Waveform hides under the shape of the track.
 	if (progress_slider) {
 		lv_obj_set_style_bg_color(progress_slider, chrome_accent(), LV_PART_INDICATOR);
-		lv_obj_set_style_bg_color(progress_slider, chrome_accent(), LV_PART_KNOB);
+		lv_obj_set_style_bg_color(progress_slider, lv_color_white(), LV_PART_KNOB);
 	}
 	lyrics_repaint_lit(); // the sung line wears it too
 }
@@ -3517,7 +3522,7 @@ static void player_refresh_theme(void) {
 	// look in both themes; only the no-cover panel follows the theme.
 	cover_set_backdrop_light(false);
 	lv_obj_set_style_bg_color(progress_slider, chrome_accent(), LV_PART_INDICATOR);
-	lv_obj_set_style_bg_color(progress_slider, chrome_accent(), LV_PART_KNOB);
+	lv_obj_set_style_bg_color(progress_slider, lv_color_white(), LV_PART_KNOB);
 	set_over_cover(chrome_over_cover); // repaints the play disc for the new palette
 	update_repeat_button();
 	update_speed_button();
@@ -5270,7 +5275,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_color(progress_slider, theme()->accent, LV_PART_INDICATOR);
 
 	lv_obj_set_style_radius(progress_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-	lv_obj_set_style_bg_color(progress_slider, theme()->accent, LV_PART_KNOB);
+	lv_obj_set_style_bg_color(progress_slider, lv_color_white(), LV_PART_KNOB);
 	lv_obj_set_style_border_color(progress_slider, lv_color_white(), LV_PART_KNOB);
 	lv_obj_set_style_border_opa(progress_slider, LV_OPA_COVER, LV_PART_KNOB);
 	lv_obj_set_style_border_width(progress_slider, PROGRESS_KNOB_RING, LV_PART_KNOB);
@@ -5433,7 +5438,8 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_size(play_btn, 84, 84);
 	lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(play_btn, lv_color_white(), 0); // repainted by set_over_cover
-	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
+	lv_obj_set_style_bg_opa(play_btn, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_bg_opa(play_btn, LV_OPA_20, LV_STATE_PRESSED);
 	lv_obj_set_style_shadow_width(play_btn, 0, 0);
 	lv_obj_add_event_cb(play_btn, play_btn_event_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_set_style_opa(play_btn, LV_OPA_40, LV_STATE_DISABLED);
