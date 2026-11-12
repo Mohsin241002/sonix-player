@@ -208,7 +208,7 @@ static void scan_folder(void) {
 	struct dirent *de;
 	while ((de = readdir(d)) != NULL && shelf_count < SHELF_MAX) {
 		size_t len = strlen(de->d_name);
-		if (len < 6 || len >= sizeof(shelf[0].file) || strcasecmp(de->d_name + len - 5, ".epub") != 0) {
+		if (len < 6 || de->d_name[0] == '.' || len >= sizeof(shelf[0].file) || strcasecmp(de->d_name + len - 5, ".epub") != 0) {
 			continue;
 		}
 		shelf_entry_t *entry = &shelf[shelf_count];

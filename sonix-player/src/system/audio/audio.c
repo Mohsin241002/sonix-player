@@ -1255,7 +1255,8 @@ static void log_pcm_chain(snd_pcm_t *pcm) {
 //
 // So the stream stays at the rate chosen when the link came up, and the track is
 // converted to it by a plug of this player's own in front of bluealsa's PCM, its
-// slave rate fixed. [bluetooth] follow_track_rate = 1 asks the headphones
+// slave rate fixed. Mono is mixed to stereo so narration does not force an
+// A2DP codec/channel renegotiation. [bluetooth] follow_track_rate = 1 asks the headphones
 // instead, as before.
 // ---------------------------------------------------------------------------
 
@@ -1266,7 +1267,7 @@ static void log_pcm_chain(snd_pcm_t *pcm) {
 // configuration it opens from, too.
 static int open_bluetooth_at_rate(snd_pcm_t **pcm, const char *device, unsigned rate, int mode) {
 	char text[sizeof(output_pcm) + 128];
-	int len = snprintf(text, sizeof(text), "pcm." BT_CONVERTED_PCM " { type plug slave { pcm \"%s\" rate %u } }",
+	int len = snprintf(text, sizeof(text), "pcm." BT_CONVERTED_PCM " { type plug slave { pcm \"%s\" rate %u channels 2 } }",
 					   device, rate);
 	if (len < 0 || (size_t)len >= sizeof(text)) {
 		return -EINVAL;
@@ -1396,13 +1397,13 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	// So while the radio still says there is a sink, wait for it.
 	// See open_bluetooth_at_rate().
 	unsigned convert_to = 0;
-	if (bluetooth && !config_get_int("bluetooth", "follow_track_rate", 0)) {
-		unsigned sink_rate = bluetooth_sink_rate();
-		if (sink_rate > 0 && sink_rate != (unsigned)sample_rate) {
-			convert_to = sink_rate;
-			fprintf(stderr, "audio: the headphones stay at %u Hz; the %d Hz track is converted to it\n", sink_rate,
-					sample_rate);
-		}
+	if (bluetooth) {
+		unsigned sink_rate = config_get_int("bluetooth", "follow_track_rate", 0) ? 0 : bluetooth_sink_rate();
+		convert_to = sink_rate ? sink_rate : (unsigned)sample_rate;
+		if (convert_to != (unsigned)sample_rate)
+			fprintf(stderr, "audio: the headphones stay at %u Hz; the %d Hz track is converted to it\n", convert_to, sample_rate);
+		if (channels == 1)
+			fprintf(stderr, "audio: mono source mixed to the existing stereo Bluetooth transport\n");
 	}
 
 	int err = -EBUSY;
@@ -3484,7 +3485,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			pthread_mutex_unlock(&audio_mutex);
 
 			if (entering) {
-				int64_t rewind_bytes = (int64_t)(pause_stop_stream(pcm_handle, frame_bytes) * decim_factor * (stretch ? speed_factor(stretch) : 1.0));
+				int64_t rewind_bytes = (int64_t)(pause_stop_stream(pcm_handle, frame_bytes) * decim_factor * (sync_clock_enabled && stretch ? speed_factor(stretch) : 1.0));
 				if (rewind_bytes > 0) {
 					// The frames still queued were never heard: put the decoder
 					// back over them so resuming carries on from where the
@@ -3493,7 +3494,8 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 					uint64_t rewind_frames = (uint64_t)(rewind_bytes / frame_bytes);
 					uint64_t resume_frame = played_frames > rewind_frames ? played_frames - rewind_frames : 0;
 					if (decoder_seek_to_frame(dec, resume_frame)) {
-						speed_reset(stretch);
+						if (sync_clock_enabled)
+							speed_reset(stretch);
 						if (decim_factor > 1) {
 							decimate_reset(&decim);
 						}

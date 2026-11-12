@@ -1,4 +1,5 @@
 #include "src/system/ebook/ebookaudio.h"
+#include "src/system/ebook/epub_cache.h"
 #include "src/system/audio/audio.h"
 #include "src/system/core/config.h"
 #include "src/system/ebook/bookmarks.h"
@@ -21,9 +22,12 @@ typedef struct {
 	atomic_bool cancelled;
 	atomic_bool done;
 	bool ok;
-	char book[512], member[1024], destination[512];
+	char book[512], member[1024], destination[512], root[512];
+	bool recover_legacy;
 } extract_job_t;
 
+static epub_cache_t cache = EPUB_CACHE_INIT;
+static bool legacy_checked;
 static ebook_t *book;
 static extract_job_t *job;
 static char card[512], cache_dir[512], cached_file[512], cached_member[1024];
@@ -54,6 +58,8 @@ static void save_position(void) {
 static bool cancelled(void *user) { return atomic_load(&((extract_job_t *)user)->cancelled); }
 static void *extract_worker(void *user) {
 	extract_job_t *work = user;
+	if (work->recover_legacy)
+		epub_cache_recover_legacy(work->root, cancelled, work);
 	work->ok = ebook_extract_audio(work->book, work->member, work->destination, cancelled, work);
 	atomic_store(&work->done, true);
 	return NULL;
@@ -106,8 +112,7 @@ void ebookaudio_detach(void) {
 	ebookaudio_stop();
 	if (cached_file[0])
 		unlink(cached_file);
-	if (cache_dir[0])
-		rmdir(cache_dir);
+	epub_cache_release(&cache);
 	cache_dir[0] = cached_file[0] = cached_member[0] = '\0';
 	book = NULL;
 	error_tag = NULL;
@@ -201,18 +206,19 @@ static void request_play(void) {
 	if (cached_file[0])
 		unlink(cached_file);
 	cached_file[0] = cached_member[0] = '\0';
-	if (!cache_dir[0]) {
-		if (!card[0] || snprintf(cache_dir, sizeof(cache_dir), "%s/.ebook-audio-XXXXXX", card) >= (int)sizeof(cache_dir) || !mkdtemp(cache_dir)) {
-			cache_dir[0] = '\0';
-			fail("ebookaudio_cache_failed");
-			return;
-		}
+	if (!epub_cache_acquire(&cache, card, cache_dir, sizeof(cache_dir))) {
+		cache_dir[0] = '\0';
+		fail("ebookaudio_cache_failed");
+		return;
 	}
 	job = calloc(1, sizeof(*job));
 	if (!job) {
 		fail("ebookaudio_extract_failed");
 		return;
 	}
+	job->recover_legacy = !legacy_checked;
+	legacy_checked = true;
+	snprintf(job->root, sizeof(job->root), "%s", card);
 	atomic_init(&job->cancelled, false);
 	atomic_init(&job->done, false);
 	snprintf(job->book, sizeof(job->book), "%s", ebook_path(book));
@@ -231,7 +237,7 @@ static void request_play(void) {
 }
 
 bool ebookaudio_active(void) { return owns_output; }
-bool ebookaudio_owns_path(const char *path) { return path && strstr(path, "/.ebook-audio-") != NULL; }
+bool ebookaudio_owns_path(const char *path) { return path && (strstr(path, "/.ebook-audio-") != NULL || strstr(path, "/.sonix-ebook-audio/") != NULL); }
 bool ebookaudio_loading(void) { return job != NULL; }
 bool ebookaudio_playing(void) { return owns_output && !paused && (job || (started && audio_get_status() == AUDIO_STATUS_PLAYING)); }
 const char *ebookaudio_error(void) { return error_tag; }

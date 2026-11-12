@@ -121,7 +121,8 @@ static bool back_to(lv_obj_t *screen) {
 static bool run_input_tests(bool playing) {
     switch_screen(main_menu_screen);
     pump(8);
-    if (!tap_label(main_menu_screen, "home_apps") || lv_screen_active() != main_menu_apps_screen) {
+    lv_obj_t *apps_icon = find_image(main_menu_screen, &icon_apps);
+    if (!apps_icon || !tap_object(apps_icon) || lv_screen_active() != main_menu_apps_screen) {
         fprintf(stderr, "Input test: dock Apps did not open the app drawer\n");
         return false;
     }

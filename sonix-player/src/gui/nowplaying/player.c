@@ -16,6 +16,7 @@
 #include "src/gui/nowplaying/lyricsearch.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/fonts/indic.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
@@ -1473,6 +1474,7 @@ static void lyrics_fill(void) {
 		lv_obj_set_width(line, lv_pct(100));
 		lv_obj_set_style_text_align(line, LV_TEXT_ALIGN_CENTER, 0);
 		lv_obj_set_style_text_font(line, &font_ui_26, 0);
+		indic_label_set_text(line, lyrics_cur.lines[i].text, &font_ui_26, 26, lv_obj_get_content_width(lyrics_view));
 		lv_obj_set_style_text_opa(line, lyrics_cur.synced ? LYRICS_DIM_OPA : LV_OPA_COVER, 0);
 		lv_obj_set_event_bubble(line, true);
 		lv_obj_set_clickable(line, false);

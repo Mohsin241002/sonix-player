@@ -1,6 +1,7 @@
 #include "gui.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -134,6 +135,8 @@ static gui_post_t post_ring[GUI_POST_MAX];
 static int post_head;
 static int post_count;
 static lv_timer_t *post_timer;
+static pthread_t ui_thread;
+static atomic_bool ui_ready;
 
 // ---------------------------------------------------------------------------
 // The doorbell
@@ -197,6 +200,41 @@ bool gui_post(void (*cb)(void *), void *user) {
 		(void)ignored;
 	}
 	return queued;
+}
+
+typedef struct {
+    pthread_mutex_t lock;
+    pthread_cond_t condition;
+    bool done;
+} storage_release_t;
+
+static void storage_release_cb(void *user) {
+    ebookreader_release_storage();
+    if (user) {
+        storage_release_t *request = user;
+        pthread_mutex_lock(&request->lock);
+        request->done = true;
+        pthread_cond_signal(&request->condition);
+        pthread_mutex_unlock(&request->lock);
+    }
+}
+
+bool gui_prepare_storage_release(void) {
+    if (!ui_ready) return false;
+    if (pthread_equal(pthread_self(), ui_thread)) {
+        storage_release_cb(NULL);
+        return true;
+    }
+    storage_release_t request = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false};
+    bool queued = gui_post(storage_release_cb, &request);
+    if (queued) {
+        pthread_mutex_lock(&request.lock);
+        while (!request.done) pthread_cond_wait(&request.condition, &request.lock);
+        pthread_mutex_unlock(&request.lock);
+    }
+    pthread_cond_destroy(&request.condition);
+    pthread_mutex_destroy(&request.lock);
+    return queued;
 }
 
 static void post_drain_cb(lv_timer_t *timer) {
@@ -578,6 +616,8 @@ void gui_notify_power_menu(void) { gui_post(power_menu_async_cb, NULL); }
 
 
 void gui_init(gui_config_t *cfg) {
+	ui_thread = pthread_self();
+	ui_ready = true;
 	// Colours first: every screen below styles itself from the active palette.
 	theme_init();
 

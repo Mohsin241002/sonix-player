@@ -33,6 +33,11 @@ void gui_init(gui_config_t *cfg);
 // passed heap memory owns it again and has to free it.
 bool gui_post(void (*cb)(void *), void *user);
 
+// Wait for the UI to close the reader, its ZIP and extraction/cache handles.
+// Must complete before unmounting/exporting the card. Never hold a storage
+// mutex while waiting. False leaves storage local.
+bool gui_prepare_storage_release(void);
+
 // The descriptor the main loop waits on instead of sleeping on a timer: it
 // becomes readable as soon as something is posted. -1 when it could not be
 // opened, in which case the loop falls back to usleep().

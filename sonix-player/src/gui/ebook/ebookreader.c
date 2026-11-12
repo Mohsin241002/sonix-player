@@ -1,4 +1,5 @@
 #include "ebookreader.h"
+#include "src/gui/shell/main_menu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2723,6 +2724,7 @@ static void build_menu(gui_config_t *cfg) {
 static lv_obj_t *audio_strip, *audio_strip_time, *audio_strip_play;
 static lv_obj_t *audio_panel_time, *audio_panel_play, *audio_panel_slider, *audio_panel_speed;
 static lv_obj_t *audio_panel_previous, *audio_panel_next;
+static lv_timer_t *audio_timer;
 
 static void audio_forget_widgets(void) {
 	audio_panel_time = audio_panel_play = audio_panel_slider = audio_panel_speed = NULL;
@@ -2733,6 +2735,13 @@ static void audio_refresh(void) {
 	if (!audio_strip)
 		return;
 	bool available = book && chapter_has_audio();
+	if (audio_timer) {
+		bool active = available && lv_screen_active() == ebookreader_screen;
+		if (active && lv_timer_get_paused(audio_timer))
+			lv_timer_resume(audio_timer);
+		else if (!active)
+			lv_timer_pause(audio_timer);
+	}
 	lv_obj_set_hidden(audio_strip, !available);
 	if (!available)
 		return;
@@ -2862,8 +2871,12 @@ static void audio_timer_cb(lv_timer_t *timer) {
 			ebookaudio_toggle();
 		}
 	}
-	audio_follow(false);
-	audio_refresh();
+	// Transport and chapter advancement must continue with the panel dark.
+	// Catch up the visible page on wake instead of laying out hidden frames.
+	if (power_screen_is_on()) {
+		audio_follow(false);
+		audio_refresh();
+	}
 }
 
 static void audio_toggle_cb(lv_event_t *e) {
@@ -3030,7 +3043,10 @@ static void build_audio_strip(gui_config_t *cfg) {
 	audio_strip_play = lv_image_create(play);
 	lv_image_set_src(audio_strip_play, &icon_play_small);
 	lv_obj_center(audio_strip_play);
-	lv_timer_create(audio_timer_cb, 100, NULL);
+	audio_timer = lv_timer_create(audio_timer_cb, 100, NULL);
+	lv_timer_pause(audio_timer);
+	// This timer drives playback as well as the controls; never pause it
+	// merely because the screen is off. reader_unloaded_cb stops it.
 }
 
 // The page of a book wants the whole panel: the clock and the battery are
@@ -3039,14 +3055,20 @@ static void build_audio_strip(gui_config_t *cfg) {
 // down.
 static void reader_loaded_cb(lv_event_t *e) {
 	(void)e;
+	audio_refresh();
 	topbar_set_hidden(true);
 	back_btn_force_hidden(true);
 }
 
 static void reader_unloaded_cb(lv_event_t *e) {
 	(void)e;
+	lv_timer_pause(audio_timer);
 	back_btn_force_hidden(false);
 	topbar_set_hidden(false);
+	if (!book) {
+		power_hold_screen_on(false);
+		return;
+	}
 
 	// Everything the book owns goes here, and in this order: the objects that
 	// point at the fonts first, then the fonts, then the book. The other way
@@ -3078,6 +3100,13 @@ static void reader_unloaded_cb(lv_event_t *e) {
 		ebook_log_memory(NULL, "closed");
 	}
 	power_hold_screen_on(false);
+}
+
+void ebookreader_release_storage(void) {
+    if (!book) return;
+    bool visible = lv_screen_active() == ebookreader_screen;
+    reader_unloaded_cb(NULL);
+    if (visible) switch_screen(main_menu_screen);
 }
 
 // Where the next open should land, when it is not "wherever it was left". Set

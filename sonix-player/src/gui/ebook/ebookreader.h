@@ -18,4 +18,7 @@ void ebookreader_open(const char *path);
 // was left: what the bookmarks page opens a book with.
 void ebookreader_open_at(const char *path, uint32_t spine, uint32_t block, uint32_t offset);
 
+// UI thread: close every book-owned file before the card leaves the player.
+void ebookreader_release_storage(void);
+
 #endif /* EBOOKREADER_H */

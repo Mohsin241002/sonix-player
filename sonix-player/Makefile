@@ -1,3 +1,4 @@
+.DEFAULT_GOAL := all
 # Makefile for sonix_player
 
 # Target executables
@@ -151,7 +152,7 @@ TARGET_CXXFLAGS = $(TARGET_CFLAGS) $(GB_CFLAGS)
 # distributions do not ship, and the link fails with "cannot find -lstdc++".
 GB_LDFLAGS = -static-libstdc++ -static-libgcc
 HOST_LDFLAGS = $(shell sdl2-config --libs) -lpthread -lm -ldl -lasound $(shell pkg-config --libs freetype2) \
-			   $(shell pkg-config --libs opusfile wavpack)
+			   $(shell pkg-config --libs opusfile wavpack harfbuzz)
 #
 # --gc-sections: the other half of -ffunction-sections (see TARGET_CFLAGS).
 TARGET_LDFLAGS = $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS) -lpthread -lm -ldl -lasound \
@@ -214,6 +215,24 @@ AUDIO_LIBS = $(OPUSFILE_LIB) $(OPUS_LIB) $(OGG_LIB) $(WAVPACK_LIB)
 # Source files. src/gb holds a .c as well (the miniz shell) alongside the C++
 # core, so both searches reach into it.
 APP_SRCS := $(shell find src -name '*.c')
+
+# HarfBuzz shapes Indic lyrics once when loaded. The target uses a compact
+# static build; the host uses its distribution's harfbuzz development package.
+HARFBUZZ_SRC = build_gen/harfbuzz-12.2.0/src
+HARFBUZZ_OBJ = build_target/vendor/harfbuzz.o
+override TARGET_CFLAGS += -I$(HARFBUZZ_SRC)
+override HOST_CFLAGS += $(shell pkg-config --cflags harfbuzz)
+
+$(HARFBUZZ_SRC)/hb.h: tools/fetch_harfbuzz.py
+	python3 tools/fetch_harfbuzz.py
+
+$(HARFBUZZ_OBJ): $(HARFBUZZ_SRC)/hb.h
+	@mkdir -p $(dir $@)
+	$(CROSS_CXX) -std=c++17 -Os -DNDEBUG -DHB_TINY -fno-exceptions -fno-rtti \
+		-ffunction-sections -fdata-sections -march=mips32r2 -mno-madd4 \
+		-I$(HARFBUZZ_SRC) -c $(HARFBUZZ_SRC)/harfbuzz.cc -o $@
+
+build_target/gui/fonts/indic.o: $(HARFBUZZ_SRC)/hb.h
 LVGL_SRCS = $(shell find $(LVGL_DIR)/src -type f -name '*.c')
 
 # The C++ here is the Game Boy core under src/gb/core plus its facade. Separate
@@ -275,8 +294,8 @@ build_host/lvgl/%.o: $(LVGL_DIR)/%.c
 
 target: $(TARGET_BIN) $(LAUNCH_BIN) compile_commands.json
 
-$(TARGET_BIN): $(TARGET_OBJS)
-	$(TARGET_LD) -o $@ $(TARGET_OBJS) $(TARGET_LDFLAGS)
+$(TARGET_BIN): $(TARGET_OBJS) $(HARFBUZZ_OBJ)
+	$(TARGET_LD) -o $@ $(TARGET_OBJS) $(HARFBUZZ_OBJ) $(TARGET_LDFLAGS)
 	@$(MAKE) --no-print-directory check-abi
 	@$(MAKE) --no-print-directory strip-target
 	@echo "Target build complete: File ready at '$(TARGET_BIN)'"

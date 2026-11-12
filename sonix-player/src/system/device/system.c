@@ -911,6 +911,16 @@ void storage_recheck_card(void) {
 		return;
 	}
 
+	// Do not wait for the GUI while holding card_lock: the UI may itself be
+	// entering shutdown or changing ADB mode. Recheck ownership after waiting.
+	pthread_mutex_unlock(&card_lock);
+	if (!gui_prepare_storage_release()) return;
+	pthread_mutex_lock(&card_lock);
+	if (card_released || usb_storage_active() || (sd_root[0] && is_mounted(sd_root) && mount_is_alive(sd_root))) {
+		pthread_mutex_unlock(&card_lock);
+		return;
+	}
+
 	// Is there even a card to mount? No point thrashing when the slot is empty.
 	if (!pick_sd_device(g_storage_cfg)) {
 		card_databases_detach();
@@ -1029,6 +1039,7 @@ static void log_open_on_card(void) {
 }
 
 void storage_release_for_shutdown(void) {
+	if (!gui_prepare_storage_release()) return;
 	if (!g_storage_cfg || !g_storage_cfg->manage_mount) {
 		return;
 	}
@@ -1144,6 +1155,7 @@ void *sd_hotplug_thread(void *arg) {
 			}
 
 			if (strstr(buf, "remove@")) {
+				if (!gui_prepare_storage_release()) continue;
 				printf("SD Card Removed\n");
 				pthread_mutex_lock(&card_lock);
 				bool was_attached = card_attached;

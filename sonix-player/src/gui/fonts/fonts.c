@@ -82,6 +82,17 @@ static script_face_t scripts[] = {
 	{"Korean", FACE_FILES("korean"), FACE_FILES("korean-bold"), 0, NULL, NULL, false},
 	{"Thai", FACE_FILES("thai"), FACE_FILES("thai-bold"), 0, NULL, NULL, false},
 	{"Arabic", FACE_FILES("arabic"), FACE_FILES("arabic-bold"), ARABIC_RAISE, NULL, NULL, false},
+	{"Devanagari", FACE_FILES("indic/NotoSansDevanagari-Regular"), FACE_FILES("indic/NotoSansDevanagari-Regular"), 0, NULL, NULL, false},
+	{"Bengali", FACE_FILES("indic/NotoSansBengali-Regular"), FACE_FILES("indic/NotoSansBengali-Regular"), 0, NULL, NULL, false},
+	{"Gurmukhi", FACE_FILES("indic/NotoSansGurmukhi-Regular"), FACE_FILES("indic/NotoSansGurmukhi-Regular"), 0, NULL, NULL, false},
+	{"Gujarati", FACE_FILES("indic/NotoSansGujarati-Regular"), FACE_FILES("indic/NotoSansGujarati-Regular"), 0, NULL, NULL, false},
+	{"Oriya", FACE_FILES("indic/NotoSansOriya-Regular"), FACE_FILES("indic/NotoSansOriya-Regular"), 0, NULL, NULL, false},
+	{"Tamil", FACE_FILES("indic/NotoSansTamil-Regular"), FACE_FILES("indic/NotoSansTamil-Regular"), 0, NULL, NULL, false},
+	{"Telugu", FACE_FILES("indic/NotoSansTelugu-Regular"), FACE_FILES("indic/NotoSansTelugu-Regular"), 0, NULL, NULL, false},
+	{"Kannada", FACE_FILES("indic/NotoSansKannada-Regular"), FACE_FILES("indic/NotoSansKannada-Regular"), 0, NULL, NULL, false},
+	{"Malayalam", FACE_FILES("indic/NotoSansMalayalam-Regular"), FACE_FILES("indic/NotoSansMalayalam-Regular"), 0, NULL, NULL, false},
+	{"OlChiki", FACE_FILES("indic/NotoSansOlChiki-Regular"), FACE_FILES("indic/NotoSansOlChiki-Regular"), 0, NULL, NULL, false},
+	{"MeeteiMayek", FACE_FILES("indic/NotoSansMeeteiMayek-Regular"), FACE_FILES("indic/NotoSansMeeteiMayek-Regular"), 0, NULL, NULL, false},
 };
 
 #define SCRIPT_COUNT (sizeof(scripts) / sizeof(scripts[0]))

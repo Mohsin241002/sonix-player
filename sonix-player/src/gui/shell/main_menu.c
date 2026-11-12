@@ -24,8 +24,8 @@
 lv_obj_t *main_menu_screen;
 lv_obj_t *main_menu_apps_screen;
 
-#define HOME_COVER_SIZE 144
-// One small RGB565 thumbnail (40.5 KiB), with no decoder, file I/O or
+#define HOME_COVER_SIZE 160
+// One small RGB565 thumbnail (50 KiB), with no decoder, file I/O or
 // full-resolution intermediate on the GUI thread. Never borrow cover pixels
 // across a track change: the player owns and frees those independently.
 static LV_ATTRIBUTE_MEM_ALIGN uint16_t cover_pixels[HOME_COVER_SIZE * HOME_COVER_SIZE];
@@ -50,20 +50,21 @@ typedef struct {
 	const lv_image_dsc_t *icon;
 	lv_obj_t **screen;
 	void (*open)(void);
+	uint32_t top, bottom; // icon gradient, lighter edge first
 } home_app_t;
 
 static const home_app_t apps[] = {
-	{"music", &icon_menu_music, &music_screen, NULL},
-	{"books", &icon_menu_books, NULL, ebookpage_open},
-	{"audiobooks", &icon_menu_audiobooks, &audiobooks_screen, NULL},
-	{"streaming", &icon_menu_streaming, &streaming_screen, NULL},
-	{"wireless", &icon_menu_wireless, &wireless_screen, NULL},
-	{"file_explorer", &icon_menu_file_explorer, NULL, filespage_open},
-	{"dac", &icon_menu_dac, &dacpage_screen, NULL},
-	{"more", &icon_menu_more, &morepage_screen, NULL},
-	{"settings", &icon_menu_settings, &settings_screen, NULL},
+	{"music", &icon_menu_music, &music_screen, NULL, 0xFF5E6E, 0xFA2D48},
+	{"books", &icon_menu_books, NULL, ebookpage_open, 0xFFB340, 0xFF8A00},
+	{"audiobooks", &icon_menu_audiobooks, &audiobooks_screen, NULL, 0x7D7AFF, 0x5451D6},
+	{"streaming", &icon_menu_streaming, &streaming_screen, NULL, 0xD77BFF, 0xAF52DE},
+	{"wireless", &icon_menu_wireless, &wireless_screen, NULL, 0x4DA3FF, 0x0A6CFF},
+	{"file_explorer", &icon_menu_file_explorer, NULL, filespage_open, 0x5AC8F5, 0x1E96D8},
+	{"dac", &icon_menu_dac, &dacpage_screen, NULL, 0x4CD964, 0x28B446},
+	{"more", &icon_menu_more, &morepage_screen, NULL, 0xAEAEB2, 0x7C7C80},
+	{"settings", &icon_menu_settings, &settings_screen, NULL, 0x8E8E93, 0x5B5B60},
 };
-static const home_app_t drawer_app = {"home_apps", &icon_apps, &main_menu_apps_screen, NULL};
+static const home_app_t drawer_app = {"home_apps", &icon_apps, &main_menu_apps_screen, NULL, 0x5A5A5E, 0x2C2C2E};
 
 static bool gesture_active(void) {
 	return player_sheet_drag_active() || switcher_back_drag_active();
@@ -181,13 +182,13 @@ static void refit_home_text(void) {
 
 static void make_player(lv_obj_t *screen, gui_config_t *cfg) {
 	int width = cfg->screen_width - 2 * cfg->padding;
-	int height = cfg->screen_height - 350;
+	int height = cfg->screen_height - 318;
 	lv_obj_t *card = lv_obj_create(screen);
 	lv_obj_remove_style_all(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
 	lv_obj_set_size(card, width, height);
 	lv_obj_align(card, LV_ALIGN_TOP_MID, 0, cfg->top_bar_height + 94);
-	lv_obj_set_style_radius(card, 24, 0);
+	lv_obj_set_style_radius(card, 28, 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_clickable(card, true);
 	lv_obj_add_event_cb(card, open_player_cb, LV_EVENT_CLICKED, NULL);
@@ -212,7 +213,8 @@ static void make_player(lv_obj_t *screen, gui_config_t *cfg) {
 	lv_image_set_src(artwork_note, &icon_music_note);
 	lv_obj_set_size(artwork_note, 64, 64);
 	lv_image_set_inner_align(artwork_note, LV_IMAGE_ALIGN_CONTAIN);
-	lv_obj_add_style(artwork_note, &theme_style_nav_icon, 0);
+	lv_obj_add_style(artwork_note, &theme_style_icon, 0);
+	lv_obj_set_style_image_opa(artwork_note, LV_OPA_30, 0);
 	lv_obj_center(artwork_note);
 	lv_obj_set_hidden(artwork, true);
 
@@ -234,7 +236,9 @@ static void make_player(lv_obj_t *screen, gui_config_t *cfg) {
 	fonts_register_change(refit_home_text);
 
 	progress_bar = lv_bar_create(card);
-	lv_obj_set_size(progress_bar, width - 48, 5);
+	lv_obj_set_size(progress_bar, width - 48, 6);
+	lv_obj_set_style_radius(progress_bar, 3, LV_PART_MAIN);
+	lv_obj_set_style_radius(progress_bar, 3, LV_PART_INDICATOR);
 	lv_obj_set_pos(progress_bar, 24, height - 144);
 	lv_bar_set_range(progress_bar, 0, 1000);
 	lv_obj_add_style(progress_bar, &theme_style_slider_track, LV_PART_MAIN);
@@ -263,49 +267,44 @@ static void make_player(lv_obj_t *screen, gui_config_t *cfg) {
 	}
 }
 
-static void dock_caption_resize(lv_event_t *event) {
-	lv_obj_t *caption = lv_event_get_target(event);
-	const lv_font_t *font = lv_obj_get_style_text_font(caption, LV_PART_MAIN);
-	int height = lv_font_get_line_height(font);
-	if (lv_obj_get_style_height(caption, LV_PART_MAIN) != height)
-		lv_obj_set_height(caption, height);
-}
-
+// Application icons: a soft two-stop gradient under a white glyph. The fill
+// is drawn directly by the software renderer; no image or layer is allocated.
 static void make_app(lv_obj_t *parent, const home_app_t *app, int width, bool dock) {
+	const int size = dock ? 68 : 76;
 	lv_obj_t *button = lv_btn_create(parent);
 	lv_obj_remove_style_all(button);
 	lv_obj_set_size(button, width, LV_SIZE_CONTENT);
-	lv_obj_set_style_min_height(button, dock ? 144 : 162, 0);
-	lv_obj_set_style_radius(button, 20, 0);
-	lv_obj_add_style(button, &theme_style_card, 0);
-	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
-	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_min_height(button, dock ? size : 132, 0);
 	lv_obj_set_scrollable(button, false);
 	lv_obj_set_event_bubble(button, true);
 	lv_obj_add_event_cb(button, open_app_cb, LV_EVENT_CLICKED, (void *)app);
 
 	lv_obj_t *square = lv_obj_create(button);
 	lv_obj_remove_style_all(square);
-	lv_obj_add_style(square, &theme_style_card, 0);
-	lv_obj_set_size(square, 76, 76);
-	lv_obj_set_style_radius(square, 20, 0);
-	lv_obj_align(square, LV_ALIGN_TOP_MID, 0, 8);
+	lv_obj_set_size(square, size, size);
+	lv_obj_set_style_radius(square, size * 23 / 100, 0);
+	lv_obj_set_style_bg_opa(square, LV_OPA_COVER, 0);
+	lv_obj_set_style_bg_color(square, lv_color_hex(app->top), 0);
+	lv_obj_set_style_bg_grad_color(square, lv_color_hex(app->bottom), 0);
+	lv_obj_set_style_bg_grad_dir(square, LV_GRAD_DIR_VER, 0);
+	lv_obj_align(square, LV_ALIGN_TOP_MID, 0, 0);
 	lv_obj_set_clickable(square, false);
 	lv_obj_set_scrollable(square, false);
+	// Pressing dims the icon itself, as a touch on a home-screen icon does.
+	lv_obj_set_style_opa(button, LV_OPA_60, LV_STATE_PRESSED);
 	lv_obj_t *icon = lv_image_create(square);
 	lv_image_set_src(icon, app->icon);
-	lv_obj_add_style(icon, &theme_style_nav_icon, 0);
+	lv_obj_set_size(icon, size / 2, size / 2);
+	lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_set_style_image_recolor(icon, lv_color_white(), 0);
+	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
 	lv_obj_center(icon);
-	lv_obj_t *caption = label(button, dock ? &font_ui_18 : &font_ui_20, false);
+	if (dock) return;
+	lv_obj_t *caption = label(button, &font_ui_18, false);
 	lv_label_set_text(caption, tr(app->label));
-	lv_obj_set_width(caption, width - 8);
+	lv_obj_set_width(caption, width - 4);
 	lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_align(caption, LV_ALIGN_TOP_MID, 0, 98);
-	if (dock) {
-		lv_label_set_long_mode(caption, LV_LABEL_LONG_DOT);
-		lv_obj_add_event_cb(caption, dock_caption_resize, LV_EVENT_STYLE_CHANGED, NULL);
-		lv_obj_send_event(caption, LV_EVENT_STYLE_CHANGED, NULL);
-	}
+	lv_obj_align(caption, LV_ALIGN_TOP_MID, 0, size + 10);
 }
 
 // A brief vertical settle uses ordinary object positions: no screen capture,
@@ -342,6 +341,8 @@ static void make_drawer(gui_config_t *cfg) {
 	lv_obj_set_pos(grid, 0, top);
 	lv_obj_set_style_pad_all(grid, cfg->padding, 0);
 	lv_obj_set_style_pad_gap(grid, 12, 0);
+	lv_obj_set_style_pad_row(grid, 18, 0);
+	lv_obj_set_style_pad_top(grid, 20, 0);
 	lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 	lv_obj_set_scroll_dir(grid, LV_DIR_VER);
@@ -363,15 +364,18 @@ void main_menu_init(gui_config_t *cfg) {
 	lv_obj_align(title, LV_ALIGN_TOP_LEFT, cfg->padding + 12, cfg->top_bar_height + 24);
 	make_player(main_menu_screen, cfg);
 	make_drawer(cfg);
+	// The dock is one quiet bar holding the four everyday destinations.
 	lv_obj_t *dock = lv_obj_create(main_menu_screen);
 	lv_obj_remove_style_all(dock);
-	lv_obj_set_size(dock, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
-	lv_obj_set_style_min_height(dock, 152, 0);
+	lv_obj_add_style(dock, &theme_style_card, 0);
+	lv_obj_set_size(dock, cfg->screen_width - 2 * cfg->padding, 100);
+	lv_obj_set_style_radius(dock, 32, 0);
+	lv_obj_set_style_pad_hor(dock, 18, 0);
 	lv_obj_align(dock, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding);
 	lv_obj_set_flex_flow(dock, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(dock, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+	lv_obj_set_flex_align(dock, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(dock, false);
-	int width = (cfg->screen_width - 2 * cfg->padding) / 4;
+	int width = (cfg->screen_width - 2 * cfg->padding - 36) / 4;
 	make_app(dock, &apps[0], width, true);
 	make_app(dock, &apps[1], width, true);
 	make_app(dock, &apps[8], width, true);

@@ -1,4 +1,5 @@
 #include "firmware.h"
+#include "src/gui/shell/gui.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -105,6 +106,10 @@ void firmware_update_start(void) {
 #ifdef HOST_BUILD
 	printf("firmware: (host build) would arm recovery and reboot\n");
 #else
+	if (!gui_prepare_storage_release()) {
+		fprintf(stderr, "firmware: reader still owns storage\n");
+		return;
+	}
 	printf("firmware: arming recovery\n");
 
 	// The screen fades out the way the power key puts it out, first: what
