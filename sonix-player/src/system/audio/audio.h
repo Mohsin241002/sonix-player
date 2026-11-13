@@ -144,6 +144,8 @@ void audio_get_progress(double *current_secs, double *total_secs);
 // Ebook synchronization follows samples heard, rather than the deep ALSA
 // output queue. No additional PCM buffers; delay is sampled by the audio thread.
 void audio_set_sync_clock(bool enabled);
+// Milliseconds since audio_play()/audio_play_at() last started a track, or -1.
+int audio_ms_since_track_request(void);
 double audio_get_audible_position(void);
 
 // Get the sample rate and channel count of the currently playing stream.

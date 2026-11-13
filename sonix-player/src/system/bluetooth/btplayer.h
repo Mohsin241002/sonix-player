@@ -58,4 +58,10 @@ bool btplayer_command_is_duplicate(void);
 // report; nothing depends on it.
 bool btplayer_registered(void);
 
+// True when a Pause or Stop from the headphones answers the player's own track
+// change rather than a request: bluealsa suspends the A2DP stream while one
+// track's PCM closes and the next one's opens, and some headphones (Sony
+// WH-1000XM6) then send Pause. A real Pause comes before the stream stops.
+bool btplayer_pause_is_echo(void);
+
 #endif /* BTPLAYER_H */

@@ -2306,7 +2306,9 @@ static void handle_bt_remote_key(const char *node, int code, bool usb) {
 	case KEY_PAUSE:
 	case KEY_STOPCD:
 	case KEY_STOP:
-		if (status == AUDIO_STATUS_PLAYING) {
+		if (!usb && btplayer_pause_is_echo()) {
+			printf("input: %s pause right after the stream went idle for a track change; ignored\n", node);
+		} else if (status == AUDIO_STATUS_PLAYING) {
 			printf("input: %s pause\n", node);
 			gui_notify_key(GUI_KEY_PLAY_PAUSE);
 		} else {

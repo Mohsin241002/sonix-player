@@ -9,6 +9,7 @@
 #include "src/gui/shell/gui.h"
 #include "src/system/audio/audio.h"
 #include "src/system/bluetooth/bluetooth.h"
+#include "src/system/bluetooth/btstack.h"
 #include "src/system/bluetooth/dbuslite.h"
 #include "src/system/playback/device_state.h"
 
@@ -66,6 +67,20 @@ bool btplayer_command_is_duplicate(void) {
 	last_command_ms = now;
 	pthread_mutex_unlock(&command_lock);
 	return duplicate;
+}
+
+#define PAUSE_ECHO_WINDOW_MS 1500
+
+bool btplayer_pause_is_echo(void) {
+	if (audio_get_status() != AUDIO_STATUS_PLAYING) {
+		return false;
+	}
+	// The stream-state signal is read on the low-priority Bluetooth thread and
+	// can be handled after the Pause itself, so the player's own track start
+	// counts too.
+	int idle = btstack_ms_since_stream_idle();
+	int started = audio_ms_since_track_request();
+	return (idle >= 0 && idle < PAUSE_ECHO_WINDOW_MS) || (started >= 0 && started < PAUSE_ECHO_WINDOW_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +213,10 @@ static void run_command(const char *member) {
 			gui_notify_key(GUI_KEY_PLAY_PAUSE);
 		}
 	} else if (strcmp(member, "Pause") == 0 || strcmp(member, "Stop") == 0) {
+		if (btplayer_pause_is_echo()) {
+			printf("btplayer: %s right after the stream went idle for a track change; ignored\n", member);
+			return;
+		}
 		if (status == AUDIO_STATUS_PLAYING) {
 			gui_notify_key(GUI_KEY_PLAY_PAUSE);
 		}

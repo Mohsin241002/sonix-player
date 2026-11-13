@@ -179,6 +179,10 @@ bool btstack_audio_source(char *address_out, size_t size);
 // every change to any transport. From the signal cache: no call, any thread.
 int btstack_transport_sending(const char *address, unsigned *serial_out);
 
+// Milliseconds since an A2DP transport last went from sending to idle, or -1
+// when none has. From the signal cache: no call, any thread.
+int btstack_ms_since_stream_idle(void);
+
 // What bluealsa negotiated on one of the two streams, in parts rather than as
 // one line: the receiver page prints the codec and the rate on their own.
 // `receiving` picks the direction -- false for the headphones this device

@@ -248,6 +248,9 @@ static bool play_request = false;
 // outside: the interface answers, the request is logged, and no track starts.
 // Read by the watchdog in main.c.
 static long play_request_ms;
+// When a track was last asked to start playing; unlike play_request_ms this is
+// not cleared once the playback thread takes the request.
+static long track_request_ms;
 static bool write_fail_retry_used = false; // one automatic track retry per play request
 
 // What audio_quiet_ms() reads: whether a track is being started or a PCM is
@@ -4122,6 +4125,7 @@ int audio_play(const char *filepath) {
 	strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
 	play_request = true;
 	play_request_ms = log_ms();
+	track_request_ms = play_request_ms;
 	write_fail_retry_used = false;
 	audio_command = AUDIO_CMD_PLAY;
 	playback_status = AUDIO_STATUS_PLAYING;
@@ -4164,6 +4168,7 @@ int audio_play_at(const char *filepath, double start_secs) {
 	current_filepath[sizeof(current_filepath) - 1] = '\0';
 	play_request = true;
 	play_request_ms = log_ms();
+	track_request_ms = play_request_ms;
 	write_fail_retry_used = false;
 	audio_command = AUDIO_CMD_PLAY;
 	playback_status = AUDIO_STATUS_PLAYING;
@@ -4430,6 +4435,13 @@ void audio_get_progress(double *current_secs, double *total_secs) {
 	if (total_secs)
 		*total_secs = progress_total_secs;
 	pthread_mutex_unlock(&audio_mutex);
+}
+
+int audio_ms_since_track_request(void) {
+	pthread_mutex_lock(&audio_mutex);
+	long at = track_request_ms;
+	pthread_mutex_unlock(&audio_mutex);
+	return at ? (int)(log_ms() - at) : -1;
 }
 
 void audio_set_sync_clock(bool enabled) {

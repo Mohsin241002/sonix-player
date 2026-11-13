@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -69,6 +70,14 @@ typedef struct {
 static transport_t transports[MAX_TRANSPORTS];
 static int transport_count;
 static unsigned transport_serial;
+// When a transport last stopped sending (CLOCK_MONOTONIC ms); 0 before the first.
+static uint64_t transport_idle_ms;
+
+static uint64_t monotonic_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+}
 
 // What the remote player last said it was doing: "playing", "paused",
 // "stopped", or empty when nothing has said. Written both by the signal and by
@@ -230,8 +239,22 @@ static void transport_note(const char *path, const char *state) {
 		snprintf(transports[i].path, sizeof(transports[i].path), "%s", path);
 		transport_count++;
 	}
+	if (transports[i].sending && !sending) {
+		transport_idle_ms = monotonic_ms();
+	}
 	transports[i].sending = sending;
 	transport_serial++;
+}
+
+int btstack_ms_since_stream_idle(void) {
+	pthread_mutex_lock(&lock);
+	uint64_t at = transport_idle_ms;
+	pthread_mutex_unlock(&lock);
+	if (!at) {
+		return -1;
+	}
+	uint64_t elapsed = monotonic_ms() - at;
+	return elapsed > INT32_MAX ? INT32_MAX : (int)elapsed;
 }
 
 // Under `lock`.
