@@ -43,3 +43,7 @@ sonix-packer/sonix_launch
 # Headless native UI validation artifacts
 sonix-player/tools/native-preview/build/
 sonix-player/tools/native-preview/screenshots/
+
+# Local R1 build tooling outputs
+local-build/toolchain/
+local-build/build-target.sh
