@@ -92,6 +92,9 @@ unsigned audio_loop_turns(void) { return loop_turns; }
 // Set by pause_stop_stream() when it paused a Bluetooth stream instead of
 // dropping it. Playback thread only.
 static bool bt_pause_held;
+// The bytes still queued on a held link when the pause began: wound back over
+// if the device is released before the unpause, played if it is not.
+static int64_t bt_held_rewind;
 
 static bool pcm_is_bluetooth(snd_pcm_t *pcm);
 
@@ -2824,21 +2827,15 @@ static void play_wav_file(const char *filepath) {
 			}
 			pthread_mutex_unlock(&audio_mutex);
 
+			int64_t rewind_bytes = 0;
 			if (entering) {
-				int64_t rewind_bytes = pause_stop_stream(pcm_handle, src_frame_bytes);
-				if (rewind_bytes > 0) {
-					// What was still in the buffer was never heard: wind the
-					// file back over it so resuming picks up where the sound
-					// actually stopped.
-					bytes_played -= rewind_bytes;
-					if (bytes_played < 0) {
-						bytes_played = 0;
-					}
-					fseeko(f, (off_t)(info.data_offset + bytes_played), SEEK_SET);
-					read_pos = bytes_played;
+				rewind_bytes = pause_stop_stream(pcm_handle, src_frame_bytes);
+				if (bt_pause_held) {
+					// Still queued on the held link, and played on the unpause.
+					bt_held_rewind = rewind_bytes;
+					rewind_bytes = 0;
 					pthread_mutex_lock(&audio_mutex);
 					progress_floor_secs = progress_current_secs; // the bar stays put
-					progress_current_secs = (double)bytes_played / bytes_per_sec;
 					pthread_mutex_unlock(&audio_mutex);
 				}
 			}
@@ -2861,12 +2858,31 @@ static void play_wav_file(const char *filepath) {
 				paused_at_ms = log_ms();
 			}
 			if (pcm_handle && (paused_release_wanted || (log_ms() - paused_at_ms) >= paused_device_close_ms())) {
+				if (bt_pause_held) {
+					rewind_bytes = bt_held_rewind; // the queue goes with the device
+				}
+				bt_held_rewind = 0;
 				snd_pcm_close(pcm_handle);
 				pcm_handle = NULL;
 				pcm_device_open = false;
 				playback_follow(NULL);
 				bt_pause_held = false;
 				fprintf(stderr, "audio[%ld]: device released while paused (DAC powered down)\n", log_ms());
+			}
+			if (rewind_bytes > 0) {
+				// What was still in the buffer was never heard: wind the
+				// file back over it so resuming picks up where the sound
+				// actually stopped.
+				bytes_played -= rewind_bytes;
+				if (bytes_played < 0) {
+					bytes_played = 0;
+				}
+				fseeko(f, (off_t)(info.data_offset + bytes_played), SEEK_SET);
+				read_pos = bytes_played;
+				pthread_mutex_lock(&audio_mutex);
+				progress_floor_secs = progress_current_secs; // the bar stays put
+				progress_current_secs = (double)bytes_played / bytes_per_sec;
+				pthread_mutex_unlock(&audio_mutex);
 			}
 
 			// With the device handed back there is nothing to be quick about:
@@ -2896,7 +2912,21 @@ static void play_wav_file(const char *filepath) {
 				// track start, prev and next takes. The cost is a few
 				// milliseconds of open, inaudible under a finger that has just
 				// pressed play.
+				if (bt_pause_held && pcm_handle && snd_pcm_pause(pcm_handle, 0) == 0) {
+					// The link was kept: carry on over it, with what was queued,
+					// rather than reopening -- a reopen suspends the A2DP stream
+					// for a moment, and multipoint headphones take that as the
+					// cue to switch to their other source.
+					bt_pause_held = false;
+					bt_held_rewind = 0;
+					is_paused = false;
+					playback_status = AUDIO_STATUS_PLAYING;
+					fprintf(stderr, "audio[%ld]: resumed on the held Bluetooth link\n", log_ms());
+					pthread_mutex_unlock(&audio_mutex);
+					continue;
+				}
 				bt_pause_held = false;
+				bt_held_rewind = 0;
 				if (pcm_handle) {
 					snd_pcm_close(pcm_handle);
 					pcm_handle = NULL;
@@ -3516,27 +3546,16 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			}
 			pthread_mutex_unlock(&audio_mutex);
 
+			int64_t rewind_bytes = 0;
 			if (entering) {
-				int64_t rewind_bytes = (int64_t)(pause_stop_stream(pcm_handle, frame_bytes) * decim_factor * (sync_clock_enabled && stretch ? speed_factor(stretch) : 1.0));
-				if (rewind_bytes > 0) {
-					// The frames still queued were never heard: put the decoder
-					// back over them so resuming carries on from where the
-					// sound actually stopped instead of skipping a beat.
-					uint64_t played_frames = (uint64_t)(bytes_played / frame_bytes);
-					uint64_t rewind_frames = (uint64_t)(rewind_bytes / frame_bytes);
-					uint64_t resume_frame = played_frames > rewind_frames ? played_frames - rewind_frames : 0;
-					if (decoder_seek_to_frame(dec, resume_frame)) {
-						if (sync_clock_enabled)
-							speed_reset(stretch);
-						if (decim_factor > 1) {
-							decimate_reset(&decim);
-						}
-						bytes_played = (int64_t)(resume_frame * frame_bytes);
-						pthread_mutex_lock(&audio_mutex);
-						progress_floor_secs = progress_current_secs; // the bar stays put
-						progress_current_secs = (double)bytes_played / bytes_per_sec;
-						pthread_mutex_unlock(&audio_mutex);
-					}
+				rewind_bytes = (int64_t)(pause_stop_stream(pcm_handle, frame_bytes) * decim_factor * (sync_clock_enabled && stretch ? speed_factor(stretch) : 1.0));
+				if (bt_pause_held) {
+					// Still queued on the held link, and played on the unpause.
+					bt_held_rewind = rewind_bytes;
+					rewind_bytes = 0;
+					pthread_mutex_lock(&audio_mutex);
+					progress_floor_secs = progress_current_secs; // the bar stays put
+					pthread_mutex_unlock(&audio_mutex);
 				}
 			}
 
@@ -3555,12 +3574,36 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				paused_at_ms = log_ms();
 			}
 			if (pcm_handle && (paused_release_wanted || (log_ms() - paused_at_ms) >= paused_device_close_ms())) {
+				if (bt_pause_held) {
+					rewind_bytes = bt_held_rewind; // the queue goes with the device
+				}
+				bt_held_rewind = 0;
 				snd_pcm_close(pcm_handle);
 				pcm_handle = NULL;
 				pcm_device_open = false;
 				playback_follow(NULL);
 				bt_pause_held = false;
 				fprintf(stderr, "audio[%ld]: device released while paused (DAC powered down)\n", log_ms());
+			}
+			if (rewind_bytes > 0) {
+				// The frames still queued were never heard: put the decoder
+				// back over them so resuming carries on from where the
+				// sound actually stopped instead of skipping a beat.
+				uint64_t played_frames = (uint64_t)(bytes_played / frame_bytes);
+				uint64_t rewind_frames = (uint64_t)(rewind_bytes / frame_bytes);
+				uint64_t resume_frame = played_frames > rewind_frames ? played_frames - rewind_frames : 0;
+				if (decoder_seek_to_frame(dec, resume_frame)) {
+					if (sync_clock_enabled)
+						speed_reset(stretch);
+					if (decim_factor > 1) {
+						decimate_reset(&decim);
+					}
+					bytes_played = (int64_t)(resume_frame * frame_bytes);
+					pthread_mutex_lock(&audio_mutex);
+					progress_floor_secs = progress_current_secs; // the bar stays put
+					progress_current_secs = (double)bytes_played / bytes_per_sec;
+					pthread_mutex_unlock(&audio_mutex);
+				}
 			}
 
 			// With the device handed back there is nothing to be quick about:
@@ -3583,7 +3626,21 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				// stuttering audio and a stuttering interface, since the
 				// real-time audio thread never yields the CPU. Open-then-write
 				// is the path every track start takes.
+				if (bt_pause_held && pcm_handle && snd_pcm_pause(pcm_handle, 0) == 0) {
+					// The link was kept: carry on over it, with what was queued,
+					// rather than reopening -- a reopen suspends the A2DP stream
+					// for a moment, and multipoint headphones take that as the
+					// cue to switch to their other source.
+					bt_pause_held = false;
+					bt_held_rewind = 0;
+					is_paused = false;
+					playback_status = AUDIO_STATUS_PLAYING;
+					fprintf(stderr, "audio[%ld]: resumed on the held Bluetooth link\n", log_ms());
+					pthread_mutex_unlock(&audio_mutex);
+					continue;
+				}
 				bt_pause_held = false;
+				bt_held_rewind = 0;
 				if (pcm_handle) {
 					snd_pcm_close(pcm_handle);
 					pcm_handle = NULL;
