@@ -188,7 +188,7 @@ static bool run_input_tests(bool playing) {
         return false;
     }
     lv_obj_update_layout(main_menu_screen);
-    if (!find_label(main_menu_screen, tr("musicsettings_now_playing")) || !fonts_set_large_text(was_large)) {
+    if (!find_image(main_menu_screen, &icon_apps) || !fonts_set_large_text(was_large)) {
         fprintf(stderr, "Input test: text-size change damaged home labels\n");
         return false;
     }

@@ -4510,6 +4510,15 @@ static void repeat_btn_event_cb(lv_event_t *e) {
 	update_repeat_button();
 }
 
+// For the home widget: the same star and playback-mode actions as the
+// buttons on this page, so both always agree and share one code path.
+bool player_favourite_starred(void) { return fav_btn_icon && lv_image_get_src(fav_btn_icon) == &icon_star_filled; }
+void player_favourite_toggle(void) { fav_btn_event_cb(NULL); }
+void player_mode_cycle(void) {
+	playlist_cycle_mode();
+	if (repeat_btn_icon) update_repeat_button();
+}
+
 static void progress_slider_event_cb(lv_event_t *e) {
 	lv_event_code_t code = lv_event_get_code(e);
 

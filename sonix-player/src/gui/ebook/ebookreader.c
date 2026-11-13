@@ -3140,14 +3140,6 @@ void ebookreader_open(const char *path) {
 		return;
 	}
 
-	// The home screen's "continue reading" tile opens this book again.
-	if (strcmp(config_store_get(config_ebook_store(), "home", "last_book", ""), path) != 0) {
-		const char *name = ebook_title(book);
-		config_store_set(config_ebook_store(), "home", "last_book", path);
-		config_store_set(config_ebook_store(), "home", "last_title", name && name[0] ? name : "");
-		config_store_save(config_ebook_store());
-	}
-
 	opt_size = (int)config_store_get_int(config_ebook_store(), "ebook", "font_size", 20);
 	opt_line = (int)config_store_get_int(config_ebook_store(), "ebook", "line_space", 4);
 	opt_margin = (int)config_store_get_int(config_ebook_store(), "ebook", "margin", 20);

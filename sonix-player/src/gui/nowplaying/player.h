@@ -33,6 +33,11 @@ void player_lyrics_reload(const char *path);
 // where the screen shows nothing -- one track, a book, DLNA, a stream.
 bool player_queue_position(int *position, int *count);
 
+// The star and the playback mode of the loaded track, for the home widget.
+bool player_favourite_starred(void);
+void player_favourite_toggle(void);
+void player_mode_cycle(void);
+
 // ---------------------------------------------------------------------------
 // The three arrangements of the now-playing page
 //

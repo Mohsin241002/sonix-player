@@ -180,3 +180,13 @@ void player_key_next(void) { preview_next_calls++; }
 void player_key_prev(void) { preview_prev_calls++; }
 
 void ebookreader_open(const char *path) { (void)path; }
+
+#include "src/system/playback/playlist.h"
+static playback_mode_t preview_mode = PLAYBACK_MODE_NORMAL;
+static bool preview_star;
+playback_mode_t playlist_get_mode(void) { return preview_mode; }
+bool player_favourite_starred(void) { return preview_star; }
+void player_favourite_toggle(void) { preview_star = !preview_star; }
+void player_mode_cycle(void) { preview_mode = preview_mode == PLAYBACK_MODE_SHUFFLE ? PLAYBACK_MODE_NORMAL : PLAYBACK_MODE_SHUFFLE; }
+bool player_queue_position(int *position, int *count) { *position = 4; *count = 12; return true; }
+void device_state_seek(double seconds) { (void)seconds; }
