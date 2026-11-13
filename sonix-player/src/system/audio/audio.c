@@ -83,6 +83,18 @@ static volatile unsigned loop_turns;
 
 unsigned audio_loop_turns(void) { return loop_turns; }
 
+// Over Bluetooth a pause keeps the A2DP link for this long before the device
+// is handed back. Dropping a bluealsa stream releases the transport at once,
+// and headphones connected to two sources (multipoint) then send their next
+// Play to the other one -- a laptop, a phone -- instead of to this player.
+#define BT_PAUSE_HOLD_MS (5 * 60 * 1000)
+
+// Set by pause_stop_stream() when it paused a Bluetooth stream instead of
+// dropping it. Playback thread only.
+static bool bt_pause_held;
+
+static bool pcm_is_bluetooth(snd_pcm_t *pcm);
+
 static int64_t pause_stop_stream(snd_pcm_t *pcm, int frame_bytes) {
 	// No stream is a fair answer, not a fault: the device is handed back after
 	// a few seconds of pause and this is called on the way into pause. Alsa
@@ -95,6 +107,16 @@ static int64_t pause_stop_stream(snd_pcm_t *pcm, int frame_bytes) {
 	snd_pcm_sframes_t queued = 0;
 	if (snd_pcm_delay(pcm, &queued) < 0 || queued < 0) {
 		queued = 0; // buffered amount unknown: resume a touch late
+	}
+
+	// The frames still queued are never played either way: the unpause closes
+	// the device and opens it again, and the caller winds the decoder back over
+	// them. Pausing rather than dropping only keeps bluealsa's transport.
+	bt_pause_held = pcm_is_bluetooth(pcm) && snd_pcm_state(pcm) == SND_PCM_STATE_RUNNING &&
+					snd_pcm_pause(pcm, 1) == 0;
+	if (bt_pause_held) {
+		fprintf(stderr, "audio[%ld]: paused (Bluetooth link held, %ld frames unplayed)\n", log_ms(), (long)queued);
+		return (int64_t)queued * frame_bytes;
 	}
 
 	snd_pcm_drop(pcm);
@@ -427,7 +449,12 @@ static bool output_is_bluetooth(void) {
 // So on Bluetooth the pause hands the device back immediately and the unpause
 // opens a fresh stream, which is the same path a track change takes. Nothing is
 // lost by it: there is no DAC to keep warm at that end of the link.
-static long paused_device_close_ms(void) { return output_is_bluetooth() ? 0 : PAUSED_DEVICE_CLOSE_MS; }
+static long paused_device_close_ms(void) {
+	if (output_is_bluetooth()) {
+		return bt_pause_held ? BT_PAUSE_HOLD_MS : 0;
+	}
+	return PAUSED_DEVICE_CLOSE_MS;
+}
 
 // Set while the metronome waits for the output that a paused track still holds
 // (audio_external_begin_yielding): the pause hands it back at its next check
@@ -2838,6 +2865,7 @@ static void play_wav_file(const char *filepath) {
 				pcm_handle = NULL;
 				pcm_device_open = false;
 				playback_follow(NULL);
+				bt_pause_held = false;
 				fprintf(stderr, "audio[%ld]: device released while paused (DAC powered down)\n", log_ms());
 			}
 
@@ -2868,6 +2896,7 @@ static void play_wav_file(const char *filepath) {
 				// track start, prev and next takes. The cost is a few
 				// milliseconds of open, inaudible under a finger that has just
 				// pressed play.
+				bt_pause_held = false;
 				if (pcm_handle) {
 					snd_pcm_close(pcm_handle);
 					pcm_handle = NULL;
@@ -3530,6 +3559,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				pcm_handle = NULL;
 				pcm_device_open = false;
 				playback_follow(NULL);
+				bt_pause_held = false;
 				fprintf(stderr, "audio[%ld]: device released while paused (DAC powered down)\n", log_ms());
 			}
 
@@ -3553,6 +3583,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				// stuttering audio and a stuttering interface, since the
 				// real-time audio thread never yields the CPU. Open-then-write
 				// is the path every track start takes.
+				bt_pause_held = false;
 				if (pcm_handle) {
 					snd_pcm_close(pcm_handle);
 					pcm_handle = NULL;
@@ -4375,6 +4406,9 @@ void audio_resume(void) {
 
 	pthread_mutex_lock(&audio_mutex);
 	audio_command = AUDIO_CMD_RESUME;
+	// The unpause reopens the stream, which the headphones can answer with a
+	// Pause just as at a track change (see audio_ms_since_track_request).
+	track_request_ms = log_ms();
 
 	// Same reasoning as audio_pause(): the intent is the truth until the
 	// playback thread catches up with it.
