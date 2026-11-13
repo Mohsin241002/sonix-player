@@ -3,9 +3,16 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <ctype.h>
+#include <unistd.h>
 
 #include "src/gui/audio/dacpage.h"
 #include "src/gui/ebook/ebookpage.h"
+#include "src/gui/ebook/ebookreader.h"
+#include "src/gui/library/medialist.h"
+#include "src/system/core/config.h"
+#include "src/system/device/clock.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/library/audiobooks.h"
 #include "src/gui/library/filespage.h"
@@ -44,6 +51,12 @@ static lv_obj_t *duration_label;
 static lv_obj_t *progress_bar;
 static lv_obj_t *transport_icon;
 static lv_obj_t *transport_buttons[3];
+static lv_obj_t *weekday_label;
+static lv_obj_t *date_label;
+static lv_obj_t *reading_label;
+static int date_shown = -1;
+static void refresh_date(void);
+static void refresh_reading(void);
 
 typedef struct {
 	const char *label;
@@ -124,6 +137,7 @@ static void time_text(lv_obj_t *label, double seconds) {
 // is created, and hidden home screens perform no artwork or label work.
 void main_menu_refresh_player(const device_state_t *state) {
 	if (!track_title || lv_screen_active() != main_menu_screen || player_sheet_is_open()) return;
+	refresh_date();
 	bool loaded = state->live || state->current_file[0];
 	const char *file = strrchr(state->current_file, '/');
 	const char *title = state->metadata.title;
@@ -163,6 +177,8 @@ static void transport_cb(lv_event_t *event) {
 
 static void screen_loaded_cb(lv_event_t *event) {
 	(void)event;
+	refresh_date();
+	refresh_reading();
 	refresh_snapshot();
 }
 
@@ -180,14 +196,13 @@ static void refit_home_text(void) {
 	lv_obj_set_height(track_artist, lv_font_get_line_height(&font_ui_22));
 }
 
-static void make_player(lv_obj_t *screen, gui_config_t *cfg) {
+static void make_player(lv_obj_t *screen, gui_config_t *cfg, int top, int height) {
 	int width = cfg->screen_width - 2 * cfg->padding;
-	int height = cfg->screen_height - 318;
 	lv_obj_t *card = lv_obj_create(screen);
 	lv_obj_remove_style_all(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
 	lv_obj_set_size(card, width, height);
-	lv_obj_align(card, LV_ALIGN_TOP_MID, 0, cfg->top_bar_height + 94);
+	lv_obj_align(card, LV_ALIGN_TOP_MID, 0, top);
 	lv_obj_set_style_radius(card, 28, 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_clickable(card, true);
@@ -265,6 +280,87 @@ static void make_player(lv_obj_t *screen, gui_config_t *cfg) {
 		transport_buttons[action + 1] = button;
 		if (!action) transport_icon = icon;
 	}
+}
+
+// The header is today's date, as on a lock screen. It is recomputed only when
+// the day changes, on entry and from the existing playback snapshot.
+static void refresh_date(void) {
+	if (!date_label) return;
+	char weekday[32] = "", date[48] = "";
+	int day = 0;
+	if (clock_is_set()) {
+		time_t now = time(NULL);
+		struct tm local;
+		localtime_r(&now, &local);
+		day = local.tm_yday + 1;
+		if (day == date_shown) return;
+		strftime(weekday, sizeof(weekday), "%A", &local);
+		for (char *c = weekday; *c; c++) *c = (char)toupper((unsigned char)*c);
+		strftime(date, sizeof(date), "%e %B", &local);
+	} else if (date_shown == 0) {
+		return;
+	}
+	date_shown = day;
+	lv_label_set_text(weekday_label, weekday);
+	lv_label_set_text(date_label, date[0] == ' ' ? date + 1 : date);
+}
+
+// "Continue reading": the reader records the book it last opened. One short
+// config lookup on entry; nothing is opened or parsed until the tile is tapped.
+static void refresh_reading(void) {
+	if (!reading_label) return;
+	const char *title = config_store_get(config_ebook_store(), "home", "last_title", "");
+	set_text_if_changed(reading_label, title[0] ? title : tr("books"));
+}
+
+static void continue_reading_cb(lv_event_t *event) {
+	(void)event;
+	if (gesture_active()) return;
+	const char *path = config_store_get(config_ebook_store(), "home", "last_book", "");
+	if (path[0] && access(path, R_OK) == 0) ebookreader_open(path);
+	else ebookpage_open();
+}
+
+static void favourites_cb(lv_event_t *event) {
+	(void)event;
+	if (!gesture_active()) medialist_open(tr("favourites"), LIBRARY_LIST_FAVOURITES, LIBRARY_FILTER_NONE, NULL);
+}
+
+static lv_obj_t *make_widget(lv_obj_t *parent, int width, const lv_image_dsc_t *glyph, uint32_t top, uint32_t bottom,
+							 const char *caption, lv_event_cb_t cb) {
+	lv_obj_t *tile = lv_btn_create(parent);
+	lv_obj_remove_style_all(tile);
+	lv_obj_add_style(tile, &theme_style_card, 0);
+	lv_obj_add_style(tile, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_size(tile, width, 100);
+	lv_obj_set_style_radius(tile, 24, 0);
+	lv_obj_set_scrollable(tile, false);
+	lv_obj_add_event_cb(tile, cb, LV_EVENT_CLICKED, NULL);
+	player_sheet_attach_drag(tile, true);
+	lv_obj_t *chip = lv_obj_create(tile);
+	lv_obj_remove_style_all(chip);
+	lv_obj_set_size(chip, 36, 36);
+	lv_obj_set_style_radius(chip, 9, 0);
+	lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+	lv_obj_set_style_bg_color(chip, lv_color_hex(top), 0);
+	lv_obj_set_style_bg_grad_color(chip, lv_color_hex(bottom), 0);
+	lv_obj_set_style_bg_grad_dir(chip, LV_GRAD_DIR_VER, 0);
+	lv_obj_set_pos(chip, 16, 14);
+	lv_obj_set_clickable(chip, false);
+	lv_obj_t *icon = lv_image_create(chip);
+	lv_image_set_src(icon, glyph);
+	lv_obj_set_size(icon, 22, 22);
+	lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_set_style_image_recolor(icon, lv_color_white(), 0);
+	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+	lv_obj_center(icon);
+	lv_obj_t *text = label(tile, &font_ui_20_bold, false);
+	lv_label_set_text(text, caption);
+	lv_obj_set_width(text, width - 32);
+	lv_obj_set_height(text, lv_font_get_line_height(&font_ui_20_bold));
+	lv_label_set_long_mode(text, LV_LABEL_LONG_DOT);
+	lv_obj_align(text, LV_ALIGN_BOTTOM_LEFT, 16, -14);
+	return text;
 }
 
 // Application icons: a soft two-stop gradient under a white glyph. The fill
@@ -359,10 +455,33 @@ static void make_drawer(gui_config_t *cfg) {
 void main_menu_init(gui_config_t *cfg) {
 	lv_obj_add_style(main_menu_screen, &theme_style_screen, 0);
 	lv_obj_set_scrollable(main_menu_screen, false);
-	lv_obj_t *title = label(main_menu_screen, &font_ui_44_bold, false);
-	lv_label_set_text_static(title, "Sonix");
-	lv_obj_align(title, LV_ALIGN_TOP_LEFT, cfg->padding + 12, cfg->top_bar_height + 24);
-	make_player(main_menu_screen, cfg);
+	weekday_label = label(main_menu_screen, &font_ui_18, false);
+	lv_obj_set_style_text_color(weekday_label, theme()->accent, 0);
+	lv_obj_set_style_text_letter_space(weekday_label, 1, 0);
+	lv_obj_align(weekday_label, LV_ALIGN_TOP_LEFT, cfg->padding + 10, cfg->top_bar_height + 14);
+	date_label = label(main_menu_screen, &font_ui_36_bold, false);
+	lv_obj_align(date_label, LV_ALIGN_TOP_LEFT, cfg->padding + 10, cfg->top_bar_height + 36);
+
+	// Vertical budget: header, player, an optional row of two widgets, dock.
+	const int dock_height = 100, gap = 12;
+	int card_top = cfg->top_bar_height + 92;
+	int dock_top = cfg->screen_height - cfg->padding - dock_height;
+	int card_height = dock_top - gap - card_top;
+	bool widgets = card_height - 100 - gap >= 400;
+	if (widgets) card_height -= 100 + gap;
+	make_player(main_menu_screen, cfg, card_top, card_height);
+	if (widgets) {
+		int width = (cfg->screen_width - 2 * cfg->padding - gap) / 2;
+		lv_obj_t *row = lv_obj_create(main_menu_screen);
+		lv_obj_remove_style_all(row);
+		lv_obj_set_size(row, cfg->screen_width - 2 * cfg->padding, 100);
+		lv_obj_align(row, LV_ALIGN_TOP_MID, 0, card_top + card_height + gap);
+		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+		lv_obj_set_style_pad_column(row, gap, 0);
+		lv_obj_set_scrollable(row, false);
+		reading_label = make_widget(row, width, &icon_menu_books, 0xFFB340, 0xFF8A00, tr("books"), continue_reading_cb);
+		make_widget(row, width, &icon_menu_favourites, 0xFF6B81, 0xFA2D48, tr("favourites"), favourites_cb);
+	}
 	make_drawer(cfg);
 	// The dock is one quiet bar holding the four everyday destinations.
 	lv_obj_t *dock = lv_obj_create(main_menu_screen);

@@ -178,3 +178,5 @@ bool wifitransfer_get_enabled(void) { return false; }
 void player_key_play_pause(void) { preview_play_pause_calls++; }
 void player_key_next(void) { preview_next_calls++; }
 void player_key_prev(void) { preview_prev_calls++; }
+
+void ebookreader_open(const char *path) { (void)path; }
