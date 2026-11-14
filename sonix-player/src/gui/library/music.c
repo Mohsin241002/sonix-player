@@ -10,6 +10,7 @@
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/shell/gridpage.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/navbar.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/settings/musicsettings.h"
@@ -130,9 +131,15 @@ static void order_load(void) {
 	in_use_n = parse_list(config_get("music", "tiles", ""), in_use);
 	hidden_n = parse_list(config_get("music", "tiles_hidden", ""), hidden);
 	// Whatever neither list names is in use, at the end, in the usual order.
-	for (int i = 0; i < MUSIC_TILE_COUNT; i++) {
-		if (!listed(in_use, in_use_n, (music_tile_t)i) && !listed(hidden, hidden_n, (music_tile_t)i)) {
-			in_use[in_use_n++] = (music_tile_t)i;
+	static const music_tile_t order[] = {
+		MUSIC_TILE_ALL, MUSIC_TILE_ALBUMS, MUSIC_TILE_PLAYLISTS, MUSIC_TILE_ARTISTS,
+		MUSIC_TILE_FAVOURITES, MUSIC_TILE_MOST_PLAYED, MUSIC_TILE_ALBUM_ARTISTS,
+		MUSIC_TILE_GENRES, MUSIC_TILE_YEARS, MUSIC_TILE_BROWSE,
+	};
+	for (size_t i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
+		music_tile_t tile = order[i];
+		if (!listed(in_use, in_use_n, tile) && !listed(hidden, hidden_n, tile)) {
+			in_use[in_use_n++] = tile;
 		}
 	}
 	if (in_use_n == 0 && hidden_n > 0) {
@@ -365,13 +372,19 @@ void music_init(gui_config_t *cfg) {
 	coverflow_attach_edge(grid, cfg);
 
 	// Two buttons in the corner, so the heading has to be told to clear them.
-	settingsrow_title_corner_slots(settingsrow_title(music_screen, cfg, "music"), cfg, 2);
+	lv_obj_t *heading = settingsrow_title(music_screen, cfg, "nav_library");
+	settingsrow_title_corner_slots(heading, cfg, 1);
+	settingsrow_title_root(heading, cfg);
+
+	// The Library tab: the tab bar and mini-player under the tiles.
+	int nav_height = navbar_attach(music_screen, cfg, NAVBAR_LIBRARY, true);
+	gridpage_reserve_bottom(grid, nav_height);
 
 	lv_obj_t *settings_btn = corner_button(cfg, 0, &icon_music_settings);
 	lv_obj_add_event_cb(settings_btn, switch_screen_cb, LV_EVENT_CLICKED, musicsettings_screen);
 
-	lv_obj_t *search_btn = corner_button(cfg, 1, &icon_search);
-	lv_obj_add_event_cb(search_btn, search_cb, LV_EVENT_CLICKED, NULL);
+	// Search is a tab of its own now, so the corner keeps only the settings.
+	(void)search_cb;
 
 	empty_panel = gridpage_empty_panel(music_screen, cfg, &icon_music_note, "music_no_database", scan_cb);
 
@@ -383,7 +396,7 @@ void music_init(gui_config_t *cfg) {
 	more_hint = lv_image_create(music_screen);
 	lv_image_set_src(more_hint, &icon_chevron_down);
 	lv_obj_add_style(more_hint, &theme_style_icon, 0);
-	lv_obj_align(more_hint, LV_ALIGN_BOTTOM_MID, 0, -MORE_HINT_TRAVEL / 2);
+	lv_obj_align(more_hint, LV_ALIGN_BOTTOM_MID, 0, -nav_height - MORE_HINT_TRAVEL / 2);
 	lv_obj_set_clickable(more_hint, false);
 	lv_obj_set_floating(more_hint, true);
 	lv_obj_set_hidden(more_hint, true);

@@ -1,4 +1,5 @@
 #include "ebooksettings.h"
+#include "src/gui/shell/navbar.h"
 
 #include <stdio.h>
 
@@ -156,7 +157,7 @@ void ebooksettings_init(gui_config_t *cfg) {
 	settingsrow_title(ebooksettings_screen, cfg, "ebooksettings_reading_bar");
 
 	list_top = settingsrow_content_top(cfg);
-	list_bottom = (int32_t)cfg->screen_height;
+	list_bottom = (int32_t)cfg->screen_height - navbar_use_shared_mini(ebooksettings_screen, cfg);
 
 	// --- the paper, with the strip on it: a child of the screen and not of the
 	// list, which is what keeps it still while the list moves under it.

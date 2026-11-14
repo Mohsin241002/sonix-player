@@ -18,6 +18,7 @@ typedef struct {
 	lv_obj_t *labels[TABBAR_MAX];
 	int count;
 	int active; // -1 for none
+	bool neutral_selection;
 } tabbar_t;
 
 // Builds the empty trough in `parent`, as wide as its parent's content.
@@ -29,6 +30,7 @@ lv_obj_t *tabbar_add(tabbar_t *t, const char *text, lv_event_cb_t cb, void *user
 
 // The tab showing; -1 for none. Also repaints, after a theme change.
 void tabbar_set_active(tabbar_t *t, int index);
+void tabbar_use_neutral_selection(tabbar_t *t);
 
 // What a tab says, already translated: a name with a count, say.
 void tabbar_set_text(tabbar_t *t, int index, const char *text);

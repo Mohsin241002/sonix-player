@@ -920,13 +920,13 @@ void sonixlink_page_init(gui_config_t *cfg) {
 	sd_root = cfg->sd_root_path;
 	sonixlink_set_card_root(sd_root);
 
-	lv_obj_t *container = settingsrow_page(sonixlink_screen, cfg, "sonixlink");
+	lv_obj_t *container = settingsrow_playback_page(sonixlink_screen, cfg, "sonixlink");
 
-	settingsrow_toggle(container, "sonixlink", &toggle, toggle_changed_cb);
+	lv_obj_t *row = settingsrow_toggle(container, "sonixlink", &toggle, toggle_changed_cb);
+	settingsrow_subtitle(row, "sonixlink_stays_on");
 
-	glyph = lv_image_create(container);
-	lv_image_set_src(glyph, &icon_sonixlink_page);
-	lv_obj_set_style_margin_top(glyph, 40, 0);
+	// The design's empty state: the glyph on a disc and what the page is for.
+	glyph = settingsrow_empty(container, &icon_sonixlink_quick, false, "sonixlink_empty_title", NULL, NULL, NULL);
 
 	status_label = lv_label_create(container);
 	lv_obj_set_width(status_label, lv_pct(100));

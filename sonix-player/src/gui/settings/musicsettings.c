@@ -1,4 +1,5 @@
 #include "musicsettings.h"
+#include "src/gui/shell/tabbar.h"
 #include "musictiles.h"
 
 #include <stdint.h>
@@ -76,7 +77,7 @@ static void filter_row_cb(lv_event_t *e) {
 
 static void build_filter_page(gui_config_t *cfg) {
 	dacfilter_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(dacfilter_screen, cfg, "musicsettings_filters");
+	lv_obj_t *container = settingsrow_playback_page(dacfilter_screen, cfg, "musicsettings_filters");
 
 	for (int i = 0; i < 4; i++) {
 		settingsrow_add(container, FILTER_NAMES[i], &filter_checks[i], filter_row_cb, (void *)(intptr_t)i);
@@ -152,14 +153,13 @@ static void nos_toggle_cb(lv_event_t *e) {
 // High gain: the 6 dB gain step, done as the stock player does it -- a shift
 // of the whole volume scale on the DAC's attenuation register.
 static lv_obj_t *gain_switch;
+static lv_obj_t *output_screen;
+static tabbar_t gain_tabs;
 static lv_obj_t *album_chain_switch;
 
 static void gain_toggle_cb(lv_event_t *e) {
 	(void)e;
-	bool on = lv_obj_has_state(gain_switch, LV_STATE_CHECKED);
-	config_set_int("audio", "high_gain", on ? 1 : 0);
-	config_save();
-	set_high_gain(on ? 1 : 0);
+	musicsettings_set_high_gain(lv_obj_has_state(gain_switch, LV_STATE_CHECKED));
 }
 
 // ---------------------------------------------------------------------------
@@ -849,11 +849,48 @@ static void refresh_mseb_sliders_values(void) {
 	}
 }
 
+static tabbar_t sound_tabs[3];
+
+static void sound_tab_cb(lv_event_t *e) {
+	if (switcher_back_drag_active() || player_sheet_drag_active()) {
+		return;
+	}
+	lv_obj_t *screens[] = {musicsettings_eq_screen(), peqpage_screen(), musicsettings_mseb_screen()};
+	int index = (int)(intptr_t)lv_event_get_user_data(e);
+	if (screens[index]) {
+		switch_screen_sibling(screens[index]);
+	}
+}
+
+static void sound_tabs_loaded(lv_event_t *e) {
+	tabbar_t *tabs = lv_event_get_user_data(e);
+	tabbar_set_active(tabs, tabs->active);
+}
+
+void musicsettings_sound_tabs(lv_obj_t *screen, lv_obj_t *content, gui_config_t *cfg, int active) {
+	const int tab_height = 54;
+	int top = settingsrow_content_top(cfg);
+	tabbar_t *tabs = &sound_tabs[active];
+	lv_obj_t *bar = tabbar_create(tabs, screen);
+	lv_obj_set_width(bar, cfg->screen_width - 24);
+	lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, top);
+	const char *labels[] = {"equaliser", "peq", "mseb"};
+	for (int i = 0; i < 3; i++) {
+		tabbar_add(tabs, labels[i], sound_tab_cb, (void *)(intptr_t)i);
+	}
+	tabbar_use_neutral_selection(tabs);
+	tabbar_set_active(tabs, active);
+	lv_obj_set_height(content, lv_obj_get_style_height(content, LV_PART_MAIN) - tab_height - 8);
+	lv_obj_align(content, LV_ALIGN_TOP_LEFT, 0, top + tab_height + 8);
+	lv_obj_add_event_cb(screen, sound_tabs_loaded, LV_EVENT_SCREEN_LOADED, tabs);
+}
+
 static void build_mseb_page(gui_config_t *cfg) {
 	mseb_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(mseb_screen, cfg, "mseb");
+	lv_obj_t *container = settingsrow_playback_page(mseb_screen, cfg, "nav_sound");
+	musicsettings_sound_tabs(mseb_screen, container, cfg, 2);
 
-	settingsrow_toggle(container, "on", &mseb_enable_switch, mseb_enable_cb);
+	settingsrow_toggle(container, "mseb", &mseb_enable_switch, mseb_enable_cb);
 	if (mseb_get_enabled()) {
 		lv_obj_add_state(mseb_enable_switch, LV_STATE_CHECKED);
 	}
@@ -974,12 +1011,15 @@ static void remember_volume_cb(lv_event_t *e) {
 static lv_obj_t *eq_screen;
 static lv_obj_t *eq_enable_switch;
 static lv_obj_t *eq_sliders[EQ_BANDS];
+static lv_obj_t *eq_values[EQ_BANDS];
 
 // Puts every equalizer slider where the engine's gains are, after a reset.
 static void refresh_eq_sliders_values(void) {
 	for (int i = 0; i < EQ_BANDS; i++) {
 		if (eq_sliders[i]) {
-			lv_slider_set_value(eq_sliders[i], eq_get_band(i), LV_ANIM_OFF);
+			int gain = eq_get_band(i);
+			lv_slider_set_value(eq_sliders[i], gain, LV_ANIM_OFF);
+			lv_label_set_text_fmt(eq_values[i], "%d", gain);
 		}
 	}
 }
@@ -1008,7 +1048,9 @@ static void eq_enable_cb(lv_event_t *e) {
 static void eq_slider_cb(lv_event_t *e) {
 	int band = (int)(intptr_t)lv_event_get_user_data(e);
 	if (band >= 0 && band < EQ_BANDS && eq_sliders[band]) {
-		eq_set_band(band, (int)lv_slider_get_value(eq_sliders[band]));
+		int gain = (int)lv_slider_get_value(eq_sliders[band]);
+		eq_set_band(band, gain);
+		lv_label_set_text_fmt(eq_values[band], "%d", gain);
 	}
 }
 
@@ -1033,11 +1075,26 @@ static void refresh_eq_sliders(void) {
 	}
 }
 
+static void open_output_cb(lv_event_t *e) {
+	(void)e;
+	if (output_screen) {
+		switch_screen(output_screen);
+	}
+}
+
+static void open_dac_filter_cb(lv_event_t *e) {
+	(void)e;
+	if (dacfilter_screen) {
+		switch_screen(dacfilter_screen);
+	}
+}
+
 static void build_eq_page(gui_config_t *cfg) {
 	eq_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(eq_screen, cfg, "equaliser");
+	lv_obj_t *container = settingsrow_playback_page(eq_screen, cfg, "nav_sound");
+	musicsettings_sound_tabs(eq_screen, container, cfg, 0);
 
-	settingsrow_toggle(container, "on", &eq_enable_switch, eq_enable_cb);
+	settingsrow_toggle(container, "equaliser", &eq_enable_switch, eq_enable_cb);
 	if (eq_get_enabled()) {
 		lv_obj_add_state(eq_enable_switch, LV_STATE_CHECKED);
 	}
@@ -1067,8 +1124,13 @@ static void build_eq_page(gui_config_t *cfg) {
 		lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_flex_align(column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
+		eq_values[i] = lv_label_create(column);
+		lv_obj_add_style(eq_values[i], &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(eq_values[i], &font_ui_16, 0);
+		lv_label_set_text_fmt(eq_values[i], "%d", eq_get_band(i));
+
 		lv_obj_t *slider = lv_slider_create(column);
-		lv_obj_set_size(slider, 6, lv_pct(80));
+		lv_obj_set_size(slider, 8, lv_pct(74));
 		lv_slider_set_range(slider, EQ_GAIN_MIN_DB, EQ_GAIN_MAX_DB);
 		lv_slider_set_value(slider, eq_get_band(i), LV_ANIM_OFF);
 
@@ -1118,6 +1180,10 @@ static void build_eq_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(note, &font_ui_18, 0);
 	lv_label_set_text(note, tr("musicsettings_eq_note"));
 
+	settingsrow_gap(container);
+	settingsrow_add(container, "nav_output", NULL, open_output_cb, NULL);
+	settingsrow_add(container, "musicsettings_filters", NULL, open_dac_filter_cb, NULL);
+
 	switcher_attach_back_gesture(eq_screen);
 	theme_register_refresh(refresh_eq_sliders);
 }
@@ -1159,6 +1225,9 @@ void musicsettings_set_high_gain(bool enabled) {
 	config_set_int("audio", "high_gain", enabled ? 1 : 0);
 	config_save();
 	set_high_gain(enabled ? 1 : 0);
+	if (gain_tabs.bar) {
+		tabbar_set_active(&gain_tabs, enabled ? 1 : 0);
+	}
 	if (gain_switch) {
 		if (enabled) {
 			lv_obj_add_state(gain_switch, LV_STATE_CHECKED);
@@ -1628,7 +1697,7 @@ static void allow_delete_cb(lv_event_t *e) {
 
 static void build_library_page(gui_config_t *cfg) {
 	library_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(library_screen, cfg, "musicsettings_library");
+	lv_obj_t *container = settingsrow_playback_page(library_screen, cfg, "musicsettings_library");
 	settingsrow_title_corner_slots(settingsrow_page_title(library_screen), cfg, 0);
 
 	// Which tiles the Music page shows, and in what order.
@@ -1711,7 +1780,7 @@ static void build_library_page(gui_config_t *cfg) {
 
 static void build_nowplaying_page(gui_config_t *cfg) {
 	nowplaying_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(nowplaying_screen, cfg, "musicsettings_now_playing");
+	lv_obj_t *container = settingsrow_playback_page(nowplaying_screen, cfg, "musicsettings_now_playing");
 	settingsrow_title_corner_slots(settingsrow_page_title(nowplaying_screen), cfg, 0);
 
 	// How the now-playing page is arranged.
@@ -1799,8 +1868,13 @@ static void sleep_wheel_cb(lv_event_t *e) {
 
 // The control centre switches the same timer from outside this page, so the
 // switch and the wheels are read again every time the page comes up.
+static lv_obj_t *fade_value_label;
+
 static void playback_loaded_cb(lv_event_t *e) {
 	(void)e;
+	if (fade_value_label) {
+		lv_label_set_text(fade_value_label, tr(musicsettings_fade_enabled() ? "on" : "peq_off"));
+	}
 	settingsrow_duration_set_minutes(&sleep_row, sleeptimer_minutes(SLEEPTIMER_MUSIC));
 	sleep_refresh();
 }
@@ -1829,7 +1903,7 @@ static void queue_add_pick_cb(lv_event_t *e) {
 
 static void build_playback_page(gui_config_t *cfg) {
 	playback_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(playback_screen, cfg, "musicsettings_playback_options");
+	lv_obj_t *container = settingsrow_playback_page(playback_screen, cfg, "settings_playback");
 	// No corner buttons on this page, so the heading can have the width the
 	// default reserves for one -- "Opzioni di riproduzione" does not fit without
 	// it.
@@ -1855,7 +1929,8 @@ static void build_playback_page(gui_config_t *cfg) {
 	// The fade at the two ends of a track: a page of its own because it carries
 	// a length as well as a switch.
 	build_fade_page(cfg);
-	fade_row = settingsrow_add(container, "fade", NULL, switch_screen_cb, fade_screen);
+	fade_row = settingsrow_add(container, "fade", &fade_value_label, switch_screen_cb, fade_screen);
+	lv_label_set_text(fade_value_label, tr(musicsettings_fade_enabled() ? "on" : "peq_off"));
 
 	// Both channels as one, for a single earbud or one ear.
 	settingsrow_toggle(container, "musicsettings_mono_audio", &mono_switch, mono_cb);
@@ -1866,7 +1941,8 @@ static void build_playback_page(gui_config_t *cfg) {
 	// "Add to queue" in the library, the search and the browser: next, as it
 	// always was, or at the end.
 	lv_obj_t *queue_pills = NULL;
-	settingsrow_pills(container, "add_to_queue", &queue_pills);
+	settingsrow_section(container, "trackmenu_queue");
+	settingsrow_pills(container, "settings_add_to_queue_puts", &queue_pills);
 	queue_next_pill = settingsrow_pill(queue_pills, "queue_add_next", 0, queue_add_pick_cb);
 	queue_end_pill = settingsrow_pill(queue_pills, "queue_add_end", 1, queue_add_pick_cb);
 	queue_add_refresh();
@@ -1894,6 +1970,7 @@ static void build_playback_page(gui_config_t *cfg) {
 	lv_obj_add_event_cb(playback_screen, playback_loaded_cb, LV_EVENT_REFRESH, NULL);
 
 	// One record into the next, instead of the queue simply running out.
+	settingsrow_section(container, "settings_sec_queue_end");
 	settingsrow_toggle(container, "musicsettings_play_albums_back_to_back", &album_chain_switch, album_chain_cb);
 	// What "back to back" means here, since the answer is not obvious: the next
 	// record is the next one in the album list, and the repeat setting does not
@@ -1912,6 +1989,7 @@ static void build_playback_page(gui_config_t *cfg) {
 	}
 
 	// What survives the power switch: the loaded track and the volume level.
+	settingsrow_section(container, "settings_sec_restart");
 	settingsrow_toggle(container, "musicsettings_remember_track", &remember_track_switch, remember_track_cb);
 	if (config_get_int("player", "remember_track", 0)) {
 		lv_obj_add_state(remember_track_switch, LV_STATE_CHECKED);
@@ -1929,6 +2007,38 @@ static void musicsettings_loaded_cb(lv_event_t *e) {
 	rg_refresh();
 }
 
+static void gain_tab_cb(lv_event_t *e) {
+	musicsettings_set_high_gain((intptr_t)lv_event_get_user_data(e) != 0);
+}
+
+static void output_loaded_cb(lv_event_t *e) {
+	(void)e;
+	tabbar_set_active(&gain_tabs, musicsettings_high_gain() ? 1 : 0);
+}
+
+static void build_output_page(gui_config_t *cfg) {
+	output_screen = lv_obj_create(NULL);
+	lv_obj_t *container = settingsrow_page(output_screen, cfg, "nav_output");
+	settingsrow_section(container, "musicsettings_gain");
+	tabbar_create(&gain_tabs, container);
+	tabbar_add(&gain_tabs, "low", gain_tab_cb, (void *)0);
+	tabbar_add(&gain_tabs, "high", gain_tab_cb, (void *)1);
+	tabbar_use_neutral_selection(&gain_tabs);
+	output_loaded_cb(NULL);
+
+	settingsrow_gap(container);
+	settingsrow_add(container, "musicsettings_dsd_gain", NULL, switch_screen_cb, musicsettings_screen);
+	settingsrow_toggle(container, "musicsettings_nos", &nos_switch, nos_toggle_cb);
+	lv_obj_set_state(nos_switch, LV_STATE_CHECKED, config_get_int("audio", "dac_nos", 0) != 0);
+	settingsrow_add(container, "musicsettings_volume_limit", NULL, switch_screen_cb, vlimit_screen);
+
+	settingsrow_section(container, "musicsettings_stereo");
+	settingsrow_add(container, "musicsettings_channel_balance", NULL, switch_screen_cb, balance_screen);
+	settingsrow_add(container, "musicsettings_soundfield", NULL, switch_screen_cb, soundfield_screen);
+	settingsrow_add(container, "musicsettings_crossfeed", NULL, switch_screen_cb, crossfeed_screen);
+	lv_obj_add_event_cb(output_screen, output_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+}
+
 void musicsettings_init(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(musicsettings_screen, cfg, "music");
 
@@ -1938,6 +2048,7 @@ void musicsettings_init(gui_config_t *cfg) {
 	// widest tool to the narrowest, and the DAC's own switches at the end.
 	artistexceptions_init(cfg, organize_touched);
 	build_scan_page(cfg);
+	settingsrow_section(container, "musicsettings_library");
 	settingsrow_add(container, "musicsettings_scan_options", NULL, switch_screen_cb, scan_screen);
 
 	build_playback_page(cfg);
@@ -1953,6 +2064,7 @@ void musicsettings_init(gui_config_t *cfg) {
 	settingsrow_add(container, "lastfm", NULL, switch_screen_cb, lastfmsettings_screen());
 
 	build_eq_page(cfg);
+	settingsrow_section(container, "nav_sound");
 	eq_row = settingsrow_add(container, "equaliser", NULL, switch_screen_cb, eq_screen);
 
 	// PEQ right below: the same thing said more precisely, so whoever comes
@@ -2008,10 +2120,8 @@ void musicsettings_init(gui_config_t *cfg) {
 	// Non-oversampling off and dynamic-range enhancement on by default, like the
 	// stock player. The R1's CS43131 has no DRE: no row there, and
 	// alsa-controls.c keeps it off.
-	settingsrow_toggle(container, "musicsettings_nos", &nos_switch, nos_toggle_cb);
-	if (config_get_int("audio", "dac_nos", 0)) {
-		lv_obj_add_state(nos_switch, LV_STATE_CHECKED);
-	}
+	build_output_page(cfg);
+	settingsrow_add(container, "nav_output", NULL, switch_screen_cb, output_screen);
 
 	if (!alsa_board_is_cs43131()) {
 		settingsrow_toggle(container, "musicsettings_dac_dre", &dre_switch, dre_toggle_cb);

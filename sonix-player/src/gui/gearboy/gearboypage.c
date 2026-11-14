@@ -1,4 +1,5 @@
 #include "gearboypage.h"
+#include "src/gui/shell/navbar.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -71,6 +72,8 @@ static void add_row(int index) {
 	settingsrow_action(list_box, roms[index].name, open_rom_cb, (void *)(intptr_t)index);
 }
 
+static lv_obj_t *empty_box; // the disc and line shown when there are no games
+
 static void refresh_view_buttons(void) {
 	lv_obj_t *const buttons[] = {btn_gb, btn_gbc};
 	const bool colour[] = {false, true};
@@ -80,8 +83,10 @@ static void refresh_view_buttons(void) {
 			continue;
 		}
 		bool on = colour[i] == show_color;
-		lv_obj_set_style_bg_color(buttons[i], on ? theme()->accent : theme()->surface_pressed, 0);
-		lv_obj_set_style_text_color(lv_obj_get_child(buttons[i], 0), on ? lv_color_white() : theme()->text_primary, 0);
+		// The design's segments: the chosen one raised, the other flat.
+		lv_obj_set_style_bg_color(buttons[i], theme()->surface_pressed, 0);
+		lv_obj_set_style_bg_opa(buttons[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+		lv_obj_set_style_text_color(lv_obj_get_child(buttons[i], 0), on ? theme()->text_primary : theme()->text_secondary, 0);
 	}
 }
 
@@ -98,8 +103,10 @@ static void rebuild_rows(void) {
 
 	if (shown > 0) {
 		lv_obj_set_hidden(status_label, true);
+		lv_obj_set_hidden(empty_box, true);
 		return;
 	}
+	lv_obj_set_hidden(empty_box, false);
 
 	lv_label_set_text(status_label, show_color ? tr("gearboy_empty_note")
 											   : tr("gearboy_empty_gb_note"));
@@ -119,8 +126,9 @@ static void pick_view_cb(lv_event_t *e) {
 static lv_obj_t *make_view_choice(lv_obj_t *parent, const char *text, bool color) {
 	lv_obj_t *btn = lv_btn_create(parent);
 	lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-	lv_obj_set_style_pad_hor(btn, 26, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
+	lv_obj_set_flex_grow(btn, 1);
+	lv_obj_set_style_pad_hor(btn, 12, 0);
+	lv_obj_set_style_radius(btn, 12, 0); // a segment of the control
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_add_event_cb(btn, pick_view_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)color);
@@ -130,7 +138,7 @@ static lv_obj_t *make_view_choice(lv_obj_t *parent, const char *text, bool color
 	// never show up lowercase.
 	lv_obj_t *label = lv_label_create(btn);
 	lv_label_set_text(label, tr(text));
-	lv_obj_set_style_text_font(label, &font_ui_24, 0);
+	lv_obj_set_style_text_font(label, &font_ui_20_bold, 0);
 	lv_obj_center(label);
 
 	return btn;
@@ -194,6 +202,9 @@ static void start_scan(void) {
 	scan_generation++;
 
 	lv_label_set_text(status_label, tr("gearboy_looking_for_games"));
+	if (empty_box) {
+		lv_obj_set_hidden(empty_box, true);
+	}
 	lv_obj_set_hidden(status_label, false);
 
 	pthread_t t;
@@ -246,8 +257,9 @@ void gearboypage_init(gui_config_t *cfg) {
 	// The pills stay put while only the list below them scrolls. Same
 	// construction as the Audiobooks page: a fixed column holding the chooser
 	// row and, under it, the list.
+	int footer = navbar_use_shared_mini(gearboypage_screen, cfg);
 	lv_obj_t *container = lv_obj_create(gearboypage_screen);
-	lv_obj_set_size(container, lv_pct(100), cfg->screen_height - content_top);
+	lv_obj_set_size(container, lv_pct(100), cfg->screen_height - content_top - footer);
 	lv_obj_align(container, LV_ALIGN_TOP_LEFT, 0, content_top);
 	lv_obj_set_style_bg_opa(container, 0, 0);
 	lv_obj_set_style_border_width(container, 0, 0);
@@ -262,15 +274,16 @@ void gearboypage_init(gui_config_t *cfg) {
 
 	lv_obj_t *chooser = lv_obj_create(container);
 	lv_obj_set_size(chooser, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(chooser, 0, 0);
+	lv_obj_add_style(chooser, &theme_style_card, 0);
+	lv_obj_set_style_radius(chooser, 16, 0);
 	lv_obj_set_style_border_width(chooser, 0, 0);
-	lv_obj_set_style_pad_all(chooser, 0, 0);
-	lv_obj_set_style_pad_gap(chooser, 10, 0);
+	lv_obj_set_style_pad_all(chooser, 4, 0);
+	lv_obj_set_style_pad_gap(chooser, 4, 0);
 	lv_obj_set_scrollable(chooser, false);
 	lv_obj_set_flex_flow(chooser, LV_FLEX_FLOW_ROW);
 
-	btn_gb = make_view_choice(chooser, "gearboy_gb", false);
-	btn_gbc = make_view_choice(chooser, "gearboy_gbc", true);
+	btn_gb = make_view_choice(chooser, "gearboy_game_boy", false);
+	btn_gbc = make_view_choice(chooser, "gearboy_game_boy_color", true);
 
 	list_box = lv_obj_create(container);
 	lv_obj_set_width(list_box, lv_pct(100));
@@ -294,6 +307,14 @@ void gearboypage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(status_label, &font_ui_20, 0);
 	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
 	lv_obj_center(status_label);
+
+	// The design's empty state over the explanation: a disc with the console
+	// glyph and the one line that says what is wrong.
+	empty_box = settingsrow_empty(gearboypage_screen, &icon_files_game, false, "gearboy_no_games", NULL, NULL, NULL);
+	lv_obj_set_style_pad_top(empty_box, 0, 0);
+	lv_obj_align(empty_box, LV_ALIGN_CENTER, 0, -70);
+	lv_obj_set_hidden(empty_box, true);
+	lv_obj_set_y(status_label, 70);
 
 	refresh_view_buttons();
 	theme_register_refresh(refresh_view_buttons);

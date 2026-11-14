@@ -39,6 +39,7 @@ lv_obj_t *dlna_screen;
 
 static lv_obj_t *toggle;
 static lv_obj_t *glyph;
+static lv_obj_t *empty_title; // the empty state's line
 static lv_obj_t *title_label;
 static lv_obj_t *artist_label;
 static lv_obj_t *album_label;
@@ -69,7 +70,7 @@ static void set_line(lv_obj_t *label, const char *text) {
 }
 
 static void hide_receiver(void) {
-	hide(glyph);
+	show(empty_title);
 	hide(title_label);
 	hide(artist_label);
 	hide(album_label);
@@ -234,7 +235,11 @@ static void refresh(void) {
 		return;
 	}
 
-	show(glyph);
+	if (s.title[0]) {
+		hide(empty_title);
+	} else {
+		show(empty_title);
+	}
 	set_line(title_label, s.title);
 	set_line(artist_label, s.artist);
 	set_line(album_label, s.album);
@@ -354,17 +359,14 @@ static void wifi_row_cb(lv_event_t *e) {
 // ---------------------------------------------------------------------------
 
 void dlna_page_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(dlna_screen, cfg, "dlna");
+	lv_obj_t *container = settingsrow_playback_page(dlna_screen, cfg, "dlna");
 
-	settingsrow_toggle(container, "dlna", &toggle, toggle_changed_cb);
+	lv_obj_t *row = settingsrow_toggle(container, "dlna_renderer", &toggle, toggle_changed_cb);
+	settingsrow_subtitle(row, "dlna_visible_as");
 
-	glyph = lv_image_create(container);
-	lv_image_set_src(glyph, &icon_dlna_page);
-	lv_obj_add_style(glyph, &theme_style_icon, 0);
-	lv_obj_set_style_image_opa(glyph, LV_OPA_40, 0);
-	lv_obj_set_style_margin_top(glyph, 40, 0);
-	lv_obj_set_style_margin_bottom(glyph, 28, 0);
-	lv_obj_set_style_align(glyph, LV_ALIGN_CENTER, 0);
+	// The design's empty state: the section's glyph on a disc, and what the
+	// page is waiting for.
+	glyph = settingsrow_empty(container, &icon_dlna_quick, true, "dlna_empty_title", NULL, &empty_title, NULL);
 
 	title_label = lv_label_create(container);
 	lv_obj_set_width(title_label, lv_pct(100));

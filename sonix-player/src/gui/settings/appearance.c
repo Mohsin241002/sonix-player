@@ -184,7 +184,7 @@ static lv_obj_t *make_choice(lv_obj_t *parent, const char *text, bool dark) {
 }
 
 void appearance_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(appearance_screen, cfg, "appearance");
+	lv_obj_t *container = settingsrow_playback_page(appearance_screen, cfg, "appearance");
 
 	// One tall card: the option's name on top, the two choices under it.
 	lv_obj_t *card = lv_obj_create(container);

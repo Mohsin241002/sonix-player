@@ -32,6 +32,9 @@ void player_lyrics_reload(const char *path);
 // it (the deal's order under shuffle) and the length. False, with both zero,
 // where the screen shows nothing -- one track, a book, DLNA, a stream.
 bool player_queue_position(int *position, int *count);
+// The format line as the player words it ("FLAC · 24 bit / 96 kHz"), "" when
+// there is nothing to say.
+const char *player_format_text(void);
 
 // The star and the playback mode of the loaded track, for the home widget.
 bool player_favourite_starred(void);
@@ -109,6 +112,8 @@ void player_screen_next(void);
 bool player_current_podcast_feed(long long *id_out, podcast_feed_t *feed_out);
 
 bool player_sheet_is_open(void);
+// Studio with the lyrics up: puts them away and returns true; false otherwise.
+bool player_lyrics_back(void);
 
 // True while the gesture in progress has been claimed as a sideways drag. The
 // tap handlers on the pages behind check this so that swiping the player in

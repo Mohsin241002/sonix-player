@@ -1373,7 +1373,7 @@ void radiopage_init(gui_config_t *cfg) {
 
 	radio_init();
 
-	hub_container = settingsrow_page(radiopage_screen, cfg, "radio");
+	hub_container = settingsrow_playback_page(radiopage_screen, cfg, "radio");
 	settingsrow_title_corner_slots(settingsrow_page_title(radiopage_screen), cfg, 3);
 
 	// The drag towards the player. The screen already has it (gui.c attaches it

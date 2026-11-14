@@ -1,4 +1,5 @@
 #include "podcastpage.h"
+#include "src/gui/shell/navbar.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -3037,8 +3038,9 @@ static void build_page(gui_config_t *cfg) {
 	// settingsrow_page(), because that gives a single container and fill_list()
 	// starts it with an lv_obj_clean() -- which would take the pills with it at
 	// every fill.
+	int footer = navbar_use_shared_mini(podcast_screen, cfg);
 	lv_obj_t *column = lv_obj_create(podcast_screen);
-	lv_obj_set_size(column, lv_pct(100), cfg->screen_height - content_top);
+	lv_obj_set_size(column, lv_pct(100), cfg->screen_height - content_top - footer);
 	lv_obj_align(column, LV_ALIGN_TOP_LEFT, 0, content_top);
 	lv_obj_set_style_bg_opa(column, 0, 0);
 	lv_obj_set_style_border_width(column, 0, 0);

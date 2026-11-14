@@ -19,16 +19,17 @@ lv_style_t theme_style_switch_checked; // switch indicator, on state
 lv_style_t theme_style_accent_bg;	   // anything that must follow the accent
 lv_style_t theme_style_slider_track;   // a slider's unfilled part
 
-// Neutral surfaces keep artwork and controls legible on the small LCD.
+// "Signal": a matte faceplate black, warm off-white type and one amber signal
+// colour. Flat fills only -- the panel is RGB565, where soft gradients band.
 static theme_palette_t palette_dark = {
-	.screen_bg = LV_COLOR_MAKE(0, 0, 0),
-	.surface = LV_COLOR_MAKE(32, 32, 32),
-	.surface_pressed = LV_COLOR_MAKE(58, 58, 60),
-	.panel = LV_COLOR_MAKE(0, 0, 0),
-	.cover_bg = LV_COLOR_MAKE(32, 32, 32),
-	.text_primary = LV_COLOR_MAKE(245, 245, 247),
-	.text_secondary = LV_COLOR_MAKE(160, 160, 168),
-	.accent = LV_COLOR_MAKE(10, 132, 255),
+	.screen_bg = LV_COLOR_MAKE(10, 10, 11),
+	.surface = LV_COLOR_MAKE(22, 22, 24),
+	.surface_pressed = LV_COLOR_MAKE(38, 38, 43),
+	.panel = LV_COLOR_MAKE(10, 10, 11),
+	.cover_bg = LV_COLOR_MAKE(22, 22, 24),
+	.text_primary = LV_COLOR_MAKE(244, 242, 238),
+	.text_secondary = LV_COLOR_MAKE(180, 178, 172),
+	.accent = LV_COLOR_MAKE(255, 178, 36),
 	.dark = true,
 };
 
@@ -40,7 +41,7 @@ static theme_palette_t palette_light = {
 	.cover_bg = LV_COLOR_MAKE(229, 229, 234),
 	.text_primary = LV_COLOR_MAKE(28, 28, 30),
 	.text_secondary = LV_COLOR_MAKE(99, 99, 102),
-	.accent = LV_COLOR_MAKE(0, 122, 255),
+	.accent = LV_COLOR_MAKE(176, 108, 0),
 	.dark = false,
 };
 
@@ -60,11 +61,12 @@ static theme_palette_t tinted;
 
 static theme_palette_t *active = &palette_dark;
 
-// Stable preset order preserves saved accent choices.
+// Stable preset order preserves saved accent choices. Slot 0, the default, is
+// the Signal amber; blue took the place of yellow, which sat too close to it.
 static const lv_color_t ACCENT_COLORS[THEME_ACCENT_COUNT] = {
-	LV_COLOR_MAKE(10, 132, 255),
+	LV_COLOR_MAKE(255, 178, 36),
 	LV_COLOR_MAKE(255, 159, 10),
-	LV_COLOR_MAKE(255, 214, 10),
+	LV_COLOR_MAKE(77, 163, 255),
 	LV_COLOR_MAKE(48, 209, 88),
 	LV_COLOR_MAKE(191, 90, 242),
 	LV_COLOR_MAKE(255, 55, 95),
@@ -176,10 +178,20 @@ static void apply_palette(void) {
 	lv_style_set_image_recolor(&theme_style_nav_icon, active->accent);
 
 	lv_style_set_bg_color(&theme_style_switch, active->surface_pressed);
-	lv_style_set_bg_color(&theme_style_switch_checked, lv_color_make(48, 180, 83));
+	// "On" is the signal colour, the same as every other active thing.
+	lv_style_set_bg_color(&theme_style_switch_checked, active->accent);
+	lv_style_set_text_color(&theme_style_accent_bg, theme_on_accent());
+	lv_style_set_image_recolor(&theme_style_accent_bg, theme_on_accent());
 
 	lv_style_set_bg_color(&theme_style_accent_bg, active->accent);
 	lv_style_set_bg_color(&theme_style_slider_track, active->text_secondary);
+}
+
+lv_color_t theme_on_accent(void) {
+	lv_color_t a = active->accent;
+	// Rec. 601 luma, in 0..255.
+	unsigned luma = (299u * a.red + 587u * a.green + 114u * a.blue) / 1000u;
+	return luma > 150 ? lv_color_make(26, 18, 0) : lv_color_white();
 }
 
 static const lv_style_prop_t press_properties[] = {LV_STYLE_BG_COLOR, LV_STYLE_BG_OPA, 0};

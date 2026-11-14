@@ -417,7 +417,7 @@ void ebookmarkspage_init(gui_config_t *cfg) {
 	ebookmarkspage_screen = lv_obj_create(NULL);
 	lv_obj_add_style(ebookmarkspage_screen, &theme_style_screen, 0);
 
-	lv_obj_t *container = settingsrow_page(ebookmarkspage_screen, cfg, "bookmarks");
+	lv_obj_t *container = settingsrow_playback_page(ebookmarkspage_screen, cfg, "bookmarks");
 	books_container = container;
 	lv_obj_add_event_cb(container, books_scrolled_cb, LV_EVENT_SCROLL, NULL);
 	lv_obj_add_event_cb(container, books_scrolled_cb, LV_EVENT_SCROLL_END, NULL);
@@ -452,7 +452,7 @@ void ebookmarkspage_init(gui_config_t *cfg) {
 	ebookmarkbookpage_screen = lv_obj_create(NULL);
 	lv_obj_add_style(ebookmarkbookpage_screen, &theme_style_screen, 0);
 
-	lv_obj_t *book_container = settingsrow_page(ebookmarkbookpage_screen, cfg, "bookmarks");
+	lv_obj_t *book_container = settingsrow_playback_page(ebookmarkbookpage_screen, cfg, "bookmarks");
 	lv_obj_set_style_pad_row(book_container, 10, 0);
 	// The heading says which book, so it is rewritten every time one is opened.
 	marks_title = settingsrow_page_title(ebookmarkbookpage_screen);

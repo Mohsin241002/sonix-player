@@ -274,8 +274,39 @@ static void standby_toggled_cb(lv_event_t *e) {
 	refresh_labels();
 }
 
+// The battery level in the header's corner, in the accent, as the design has it.
+static lv_obj_t *battery_label;
+
+static void power_loaded_cb(lv_event_t *e) {
+	(void)e;
+	const char *percent = read_battery_percent();
+	if (battery_label) {
+		if (percent && percent[0]) {
+			lv_label_set_text_fmt(battery_label, "%s%%", percent);
+		} else {
+			lv_label_set_text(battery_label, "");
+		}
+		lv_obj_set_style_text_color(battery_label, theme()->accent, 0);
+		// Level with the title, against the right edge.
+		lv_obj_t *title = lv_obj_get_user_data(battery_label);
+		lv_obj_update_layout(battery_label);
+		int y = 0;
+		if (title) {
+			lv_obj_update_layout(title);
+			y = lv_obj_get_y(title) + (lv_obj_get_height(title) - lv_obj_get_height(battery_label)) / 2;
+		}
+		lv_obj_set_pos(battery_label, lv_obj_get_width(powersettings_screen) - 20 - lv_obj_get_width(battery_label), y);
+	}
+}
+
 void powersettings_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(powersettings_screen, cfg, "power");
+	lv_obj_t *container = settingsrow_playback_page(powersettings_screen, cfg, "power");
+	lv_obj_t *title = settingsrow_page_title(powersettings_screen);
+	battery_label = lv_label_create(powersettings_screen);
+	lv_label_set_text(battery_label, "");
+	lv_obj_set_style_text_font(battery_label, &font_ui_28_bold, 0);
+	lv_obj_set_user_data(battery_label, title);
+	lv_obj_add_event_cb(powersettings_screen, power_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 
 	// Suspend-to-RAM standby: suspends the player a while after the screen goes
 	// off to save battery, and playback resumes on wake. On by default. What it
@@ -297,6 +328,7 @@ void powersettings_init(gui_config_t *cfg) {
 	// lower current rather than a percentage: two switches there, the slider
 	// everywhere else.
 	bool pmic = axpcharge_applies();
+	settingsrow_section(container, "power_sec_charging");
 	if (pmic) {
 		settingsrow_toggle(container, "power_charge_limit_80", &axp_limit_switch, axp_limit_toggled_cb);
 		lv_obj_t *limit_note = lv_label_create(container);
@@ -313,6 +345,7 @@ void powersettings_init(gui_config_t *cfg) {
 	}
 
 	// The LED master switch, and the standby option that depends on it.
+	settingsrow_section(container, "power_sec_light_keys");
 	settingsrow_toggle(container, "power_led_on", &led_on_switch, led_on_toggled_cb);
 	led_off_card = settingsrow_toggle(container, "power_led_off_in_standby", &led_off_switch, led_off_toggled_cb);
 	// No "turn Wi-Fi off in standby" entry: parking the radio is automatic, and

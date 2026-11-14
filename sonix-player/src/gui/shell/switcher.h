@@ -7,6 +7,7 @@
 void switch_screen(lv_obj_t *target_screen);
 void screen_history_reset(void); // forget the back-stack (back goes to the menu)
 void switch_screen_no_history(lv_obj_t *target_screen); // load without recording
+void switch_screen_sibling(lv_obj_t *target_screen);
 void switch_screen_return_to(lv_obj_t *target_screen); // discard newer history and load
 
 // Attach the iOS-style interactive swipe-back to a page surface (a screen or
@@ -40,6 +41,9 @@ void switcher_set_back_guard_peek(lv_obj_t *screen, bool (*peek)(void));
 // True while the player sheet is open: parks the chevron higher, in the
 // artwork's corner, instead of on the (hidden) title row.
 void back_btn_player_mode(bool in_player);
+// On the player's lyrics page the chevron points back (to the sleeve) rather
+// than down (out of the player).
+void back_btn_player_points_left(bool left);
 
 // True while the status bar stays up over the player as well: the chevron
 // there goes under the bar, as on every other page, and back_btn_centre_y()

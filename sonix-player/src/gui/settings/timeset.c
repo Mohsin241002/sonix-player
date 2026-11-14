@@ -89,10 +89,11 @@ static void dst_paint(void) {
 			continue;
 		}
 		bool active = (i == 1) == on;
-		lv_obj_set_style_bg_color(dst_pills[i], active ? theme()->accent : theme()->surface_pressed, 0);
+		lv_obj_set_style_bg_color(dst_pills[i], theme()->surface_pressed, 0);
+		lv_obj_set_style_bg_opa(dst_pills[i], active ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
 		lv_obj_t *label = lv_obj_get_child(dst_pills[i], 0);
 		if (label) {
-			lv_obj_set_style_text_color(label, active ? lv_color_white() : theme()->text_primary, 0);
+			lv_obj_set_style_text_color(label, active ? theme()->text_primary : theme()->text_secondary, 0);
 		}
 	}
 }
@@ -489,6 +490,84 @@ static lv_obj_t *make_card(lv_obj_t *parent) {
 // Manual or automatic
 // ---------------------------------------------------------------------------
 
+// The card at the top of the page: the date in the accent's small capitals and
+// the time large under it, as the design opens the page.
+static lv_obj_t *clock_card, *clock_date, *clock_time, *clock_ampm;
+// The design's "Set automatically" switch, which stands in for the two tabs.
+static lv_obj_t *auto_switch;
+static lv_timer_t *clock_card_timer;
+
+static void clock_card_paint(void) {
+	if (!clock_card) {
+		return;
+	}
+	time_t now = time(NULL);
+	struct tm local;
+	localtime_r(&now, &local);
+	char date[96];
+	strftime(date, sizeof(date), "%A %e %B %Y", &local);
+	settingsrow_upper_text(clock_date, date);
+	lv_obj_set_style_text_color(clock_date, theme()->accent, 0);
+	char hm[16];
+	if (clock_use_24h()) {
+		strftime(hm, sizeof(hm), "%H:%M", &local);
+		lv_label_set_text(clock_ampm, "");
+	} else {
+		int hour = local.tm_hour % 12;
+		snprintf(hm, sizeof(hm), "%d:%02d", hour ? hour : 12, local.tm_min);
+		lv_label_set_text(clock_ampm, local.tm_hour < 12 ? "AM" : "PM");
+	}
+	if (strcmp(lv_label_get_text(clock_time), hm) != 0) {
+		lv_label_set_text(clock_time, hm);
+	}
+}
+
+static void clock_card_tick(lv_timer_t *timer) {
+	(void)timer;
+	if (panel && !lv_obj_is_hidden(panel)) {
+		clock_card_paint();
+	}
+}
+
+static void build_clock_card(lv_obj_t *parent) {
+	clock_card = lv_obj_create(parent);
+	lv_obj_set_size(clock_card, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_add_style(clock_card, &theme_style_card, 0);
+	lv_obj_set_style_radius(clock_card, 20, 0);
+	lv_obj_set_style_border_width(clock_card, 0, 0);
+	lv_obj_set_style_shadow_width(clock_card, 0, 0);
+	lv_obj_set_style_pad_left(clock_card, 20, 0);
+	lv_obj_set_style_pad_right(clock_card, 20, 0);
+	lv_obj_set_style_pad_top(clock_card, 18, 0);
+	lv_obj_set_style_pad_bottom(clock_card, 20, 0);
+	lv_obj_set_style_pad_row(clock_card, 4, 0);
+	lv_obj_set_scrollable(clock_card, false);
+	lv_obj_set_clickable(clock_card, false);
+	lv_obj_set_flex_flow(clock_card, LV_FLEX_FLOW_COLUMN);
+
+	clock_date = lv_label_create(clock_card);
+	lv_obj_set_style_text_font(clock_date, &font_ui_16_bold, 0);
+	lv_obj_set_style_text_letter_space(clock_date, 1, 0);
+
+	lv_obj_t *line = lv_obj_create(clock_card);
+	lv_obj_remove_style_all(line);
+	lv_obj_set_size(line, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(line, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+	lv_obj_set_style_pad_column(line, 10, 0);
+	clock_time = lv_label_create(line);
+	lv_label_set_text(clock_time, "");
+	lv_obj_add_style(clock_time, &theme_style_text, 0);
+	lv_obj_set_style_text_font(clock_time, &font_ui_72, 0);
+	clock_ampm = lv_label_create(line);
+	lv_label_set_text(clock_ampm, "");
+	lv_obj_add_style(clock_ampm, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(clock_ampm, &font_ui_32, 0);
+	lv_obj_set_style_pad_bottom(clock_ampm, 10, 0);
+
+	clock_card_timer = lv_timer_create(clock_card_tick, 1000, NULL);
+}
+
 // Switched off, the cards stay where they are, dimmed and deaf to the finger.
 static void cards_enable(bool on) {
 	if (tz_card) {
@@ -608,10 +687,31 @@ static void auto_timer_run(bool on) {
 }
 
 // The page as the mode says: tabs, cards, the status line and its timer.
+static void clock_card_paint(void);
+
 static void mode_paint(void) {
 	bool automatic = clock_auto_enabled();
 	tabbar_set_active(&mode_tabs, automatic ? MODE_AUTOMATIC : MODE_MANUAL);
 	cards_enable(!automatic);
+	if (auto_switch) {
+		if (automatic) {
+			lv_obj_add_state(auto_switch, LV_STATE_CHECKED);
+		} else {
+			lv_obj_remove_state(auto_switch, LV_STATE_CHECKED);
+		}
+	}
+	// The wheels and their button only while the time is set by hand: set
+	// automatically, the clock card above says what the time is.
+	if (date_card) {
+		lv_obj_set_hidden(date_card, automatic);
+	}
+	if (time_card) {
+		lv_obj_set_hidden(time_card, automatic);
+	}
+	if (confirm_btn) {
+		lv_obj_set_hidden(confirm_btn, automatic);
+	}
+	clock_card_paint();
 	if (auto_status) {
 		lv_obj_set_hidden(auto_status, !automatic);
 	}
@@ -645,8 +745,17 @@ static void auto_start(void) {
 	auto_status_paint();
 }
 
-static void mode_pick_cb(lv_event_t *e) {
-	bool automatic = (int)(intptr_t)lv_event_get_user_data(e) == MODE_AUTOMATIC;
+static void mode_set(bool automatic);
+
+static void mode_pick_cb(lv_event_t *e) { mode_set((int)(intptr_t)lv_event_get_user_data(e) == MODE_AUTOMATIC); }
+
+
+static void auto_switch_cb(lv_event_t *e) {
+	(void)e;
+	mode_set(lv_obj_has_state(auto_switch, LV_STATE_CHECKED));
+}
+
+static void mode_set(bool automatic) {
 	if (automatic == clock_auto_enabled()) {
 		return;
 	}
@@ -908,7 +1017,7 @@ static void build_timezone_panel(gui_config_t *cfg) {
 	lv_obj_t *head_title = lv_label_create(head);
 	lv_label_set_text(head_title, tr("timeset_time_zone"));
 	lv_obj_add_style(head_title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(head_title, &font_ui_32, 0);
+	lv_obj_set_style_text_font(head_title, &font_ui_32_bold, 0);
 
 	tz_list = lv_obj_create(tz_panel);
 	lv_obj_set_width(tz_list, lv_pct(100));
@@ -1043,7 +1152,7 @@ void timeset_init(gui_config_t *cfg) {
 	title_label = lv_label_create(header_row);
 	lv_label_set_text(title_label, tr("date_and_time"));
 	lv_obj_add_style(title_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(title_label, &font_ui_32, 0);
+	lv_obj_set_style_text_font(title_label, &font_ui_32_bold, 0);
 
 	// Everything else goes in a container that takes what is left and centres
 	// it: the cards sit in the middle of the space below the header, not in the
@@ -1079,14 +1188,27 @@ void timeset_init(gui_config_t *cfg) {
 
 	// Manual or automatic, first: it decides whether the cards below are the
 	// user's at all.
+	build_clock_card(content);
 	tabbar_create(&mode_tabs, content);
 	tabbar_add(&mode_tabs, "timeset_manual", mode_pick_cb, (void *)(intptr_t)MODE_MANUAL);
 	tabbar_add(&mode_tabs, "timeset_automatic", mode_pick_cb, (void *)(intptr_t)MODE_AUTOMATIC);
+	// The design's switch in place of the tabs; the tabs stay built, hidden, so
+	// the code that paints them needs no special case.
+	lv_obj_set_hidden(mode_tabs.bar, true);
+	// In a wrapper of its own: a settings row joins its parent's groups, and the
+	// page's column keeps the gaps between its other cards.
+	lv_obj_t *auto_wrap = lv_obj_create(content);
+	lv_obj_remove_style_all(auto_wrap);
+	lv_obj_set_size(auto_wrap, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(auto_wrap, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_event_bubble(auto_wrap, true);
+	settingsrow_toggle(auto_wrap, "timeset_set_automatically", &auto_switch, auto_switch_cb);
 
 	auto_status = lv_label_create(content);
 	lv_label_set_long_mode(auto_status, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(auto_status, lv_pct(100));
-	lv_obj_set_style_text_align(auto_status, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_set_style_text_align(auto_status, LV_TEXT_ALIGN_LEFT, 0);
+	lv_obj_set_style_pad_hor(auto_status, 12, 0);
 	lv_obj_add_style(auto_status, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(auto_status, &font_ui_20, 0);
 	lv_label_set_text(auto_status, "");
@@ -1219,7 +1341,7 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_t *confirm_label = lv_label_create(confirm);
 	lv_label_set_text(confirm_label, tr("confirm"));
 	lv_obj_set_style_text_font(confirm_label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(confirm_label, lv_color_white(), 0);
+	lv_obj_set_style_text_color(confirm_label, theme_on_accent(), 0);
 	lv_obj_center(confirm_label);
 
 	build_timezone_panel(cfg);

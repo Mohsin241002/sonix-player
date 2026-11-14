@@ -1,4 +1,5 @@
 #include "settingsrow.h"
+#include "src/gui/shell/navbar.h"
 
 // LVGL 9.2 made lv_event_t opaque and moved its fields here. This file swaps
 // e->user_data around a wrapped callback, which is a write, and there is no
@@ -25,7 +26,8 @@
 // reserve, since underestimating it lets a heading run under a button.
 #define CORNER_SLOT_GAP 6
 
-#define ROW_HEIGHT 100
+// 84 px is 7.3 mm on the R1's 292 ppi panel: still a full thumb target.
+#define ROW_HEIGHT 76
 
 // A toggle card that also carries a slider, at its open height.
 #define TOGGLE_SLIDER_OPEN_H 180
@@ -42,7 +44,27 @@
 // 0.00 to 2.00 in steps of 0.05) go without.
 #define SLIDER_TICK_MAX_STEPS 16
 #define ROW_RADIUS 20
-#define ROW_GAP 10
+// Rows sit close together so a page reads as a few groups, not a stack of cards.
+#define ROW_GAP 0
+
+#define GROUP_CARD LV_OBJ_FLAG_USER_1  // on a row: it takes part in grouping
+#define GROUP_HOST LV_OBJ_FLAG_USER_4  // on a container: regrouping is hooked up
+#define GROUP_JOIN_BELOW LV_OBJ_FLAG_USER_2 // on a row: another row follows it
+#define GROUP_JOIN_ABOVE LV_OBJ_FLAG_USER_3 // on a row: another row precedes it
+
+// LVGL has typed accessors for its own flags and none for the user ones.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+static bool flag_has(lv_obj_t *obj, lv_obj_flag_t flag) { return lv_obj_has_flag(obj, flag); }
+static void flag_add(lv_obj_t *obj, lv_obj_flag_t flag) { lv_obj_add_flag(obj, flag); }
+static void flag_set(lv_obj_t *obj, lv_obj_flag_t flag, bool on) {
+	if (on) {
+		lv_obj_add_flag(obj, flag);
+	} else {
+		lv_obj_remove_flag(obj, flag);
+	}
+}
+#pragma GCC diagnostic pop
 
 // Every page heading, row name and card name goes through this file, so the
 // tr() calls live here rather than in thirty call sites. A name that is not a
@@ -76,7 +98,7 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 	lv_obj_t *label = lv_label_create(screen);
 	lv_label_set_text(label, tr(text));
 	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_36_bold, 0);
+	lv_obj_set_style_text_font(label, &font_ui_32_bold, 0);
 	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 
 	// Beside the back button, not above it: the two read as one header row.
@@ -86,9 +108,10 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 	// the end of the last line that fits, so a long album name would grow the
 	// header to two lines; pinning the height to one line makes it truncate
 	// instead.
-	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_36_bold));
+	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_32_bold));
 	fit_title(label, cfg->screen_width - left - cfg->padding - CORNER_BTN_SIZE - 14);
-	lv_obj_align(label, LV_ALIGN_TOP_LEFT, left, cfg->top_bar_height + cfg->padding + 10);
+	lv_obj_align(label, LV_ALIGN_TOP_LEFT, left,
+				 cfg->top_bar_height + cfg->padding + (CORNER_BTN_SIZE - lv_font_get_line_height(&font_ui_32_bold)) / 2);
 
 	if (title_count == 0) {
 		fonts_register_change(refit_titles);
@@ -99,6 +122,15 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 	}
 
 	return label;
+}
+
+void settingsrow_title_root(lv_obj_t *title, gui_config_t *cfg) {
+	if (!title) {
+		return;
+	}
+	// A tab's own page has no chevron: the heading starts at the page margin.
+	lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20,
+				 cfg->top_bar_height + cfg->padding + (CORNER_BTN_SIZE - lv_font_get_line_height(&font_ui_32_bold)) / 2);
 }
 
 int settingsrow_content_top(gui_config_t *cfg) {
@@ -123,7 +155,7 @@ static void page_scroll_top_cb(lv_event_t *e) {
 	}
 }
 
-lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *title) {
+static lv_obj_t *make_page(lv_obj_t *screen, gui_config_t *cfg, const char *title, int footer) {
 	lv_obj_add_style(screen, &theme_style_screen, 0);
 
 	settingsrow_title(screen, cfg, title);
@@ -131,12 +163,13 @@ lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *titl
 	int top = settingsrow_content_top(cfg);
 
 	lv_obj_t *container = lv_obj_create(screen);
-	lv_obj_set_size(container, lv_pct(100), cfg->screen_height - top);
+	lv_obj_set_size(container, lv_pct(100), cfg->screen_height - top - footer);
 	lv_obj_align(container, LV_ALIGN_TOP_LEFT, 0, top);
 	lv_obj_set_style_bg_opa(container, 0, 0);
 	lv_obj_set_style_border_width(container, 0, 0);
 	lv_obj_set_style_radius(container, 0, 0);
-	lv_obj_set_style_pad_hor(container, cfg->padding, 0);
+	lv_obj_set_style_pad_hor(container, 12, 0);
+	lv_obj_set_style_pad_bottom(container, 12, 0);
 	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_gap(container, ROW_GAP, 0);
@@ -151,6 +184,14 @@ lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *titl
 	return container;
 }
 
+lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *title) {
+	return make_page(screen, cfg, title, 0);
+}
+
+lv_obj_t *settingsrow_playback_page(lv_obj_t *screen, gui_config_t *cfg, const char *title) {
+	return make_page(screen, cfg, title, navbar_use_shared_mini(screen, cfg));
+}
+
 // Steps the heading font down instead of truncating it.
 //
 // Two corner buttons leave a track list 246 px, which is not enough for a
@@ -161,7 +202,7 @@ static void fit_title(lv_obj_t *label, int width) {
 	// Down to 24, because headings such as "Opzioni di visualizzazione" do not
 	// fit at 26 either, and an ellipsis in a page title tells the reader
 	// nothing.
-	static lv_font_t *const STEPS[] = {&font_ui_36_bold, &font_ui_32, &font_ui_28, &font_ui_26, &font_ui_24};
+	static lv_font_t *const STEPS[] = {&font_ui_32_bold, &font_ui_28_bold, &font_ui_24_bold, &font_ui_22_bold};
 
 	// The text must be sized with the ellipsis out of the way: a
 	// LV_LABEL_LONG_DOT label does not keep the original string, so once LVGL
@@ -240,9 +281,12 @@ static void fit_row(lv_obj_t *row) {
 	// belongs to the name. The value counts as much as the chevron: a name like
 	// "Version du systeme d'exploitation" at 24 px runs straight into the
 	// number beside it.
-	lv_obj_t *right = lv_obj_get_child(row, 1);
-	if (right) {
-		avail -= lv_obj_get_width(right) + ROW_LABEL_GAP;
+	uint32_t n = lv_obj_get_child_count(row);
+	for (uint32_t i = 1; i < n; i++) {
+		lv_obj_t *right = lv_obj_get_child(row, (int32_t)i);
+		if (right && !lv_obj_is_hidden(right)) {
+			avail -= lv_obj_get_width(right) + ROW_LABEL_GAP;
+		}
 	}
 
 	fit_row_label(label, avail);
@@ -288,6 +332,174 @@ lv_obj_t *settingsrow_page_title(lv_obj_t *screen) {
 	return NULL;
 }
 
+// ---------------------------------------------------------------------------
+// Groups
+//
+// Rows that follow one another read as one surface: 20 px corners on the
+// outside of the run only, a hairline between its rows. LVGL rounds all four
+// corners of an object or none, so the first and the last row of a run are
+// rounded and a square patch is drawn over the two corners that face the run.
+// Anything that is not a row -- a section label, a note -- ends the run.
+// ---------------------------------------------------------------------------
+
+
+// Squares off the corners that face the run, and rules the hairline over a
+// row that has another above it. Drawn between the row's own background and
+// its children, in whatever colour the row is at that moment -- pressed
+// included -- so nothing is added to the row and its children keep their
+// places.
+static void group_draw_cb(lv_event_t *e) {
+	lv_obj_t *card = lv_event_get_target(e);
+	bool below = flag_has(card, GROUP_JOIN_BELOW), above = flag_has(card, GROUP_JOIN_ABOVE);
+	if (!below && !above) {
+		return;
+	}
+	lv_layer_t *layer = lv_event_get_layer(e);
+	lv_draw_rect_dsc_t dsc;
+	lv_draw_rect_dsc_init(&dsc);
+	dsc.bg_color = lv_obj_get_style_bg_color(card, LV_PART_MAIN);
+	dsc.bg_opa = lv_obj_get_style_bg_opa(card, LV_PART_MAIN);
+	dsc.radius = 0;
+	lv_area_t area;
+	lv_obj_get_coords(card, &area);
+	int32_t h = area.y2 - area.y1 + 1;
+	int32_t patch = h / 2 < ROW_RADIUS ? h / 2 : ROW_RADIUS;
+	if (below) {
+		lv_area_t a = area;
+		a.y1 = a.y2 - patch + 1;
+		lv_draw_rect(layer, &dsc, &a);
+	}
+	if (above) {
+		lv_area_t a = area;
+		a.y2 = a.y1 + patch - 1;
+		lv_draw_rect(layer, &dsc, &a);
+		// The hairline between this row and the one above it.
+		a.y2 = a.y1;
+		a.x1 += 20;
+		dsc.bg_color = theme()->surface_pressed;
+		dsc.bg_opa = LV_OPA_COVER;
+		lv_draw_rect(layer, &dsc, &a);
+	}
+}
+
+// role: 0 alone, 1 first of a run, 2 inside one, 3 last.
+static void group_apply(lv_obj_t *card, int role) {
+	bool below = role == 1 || role == 2, above = role == 2 || role == 3;
+	if (flag_has(card, GROUP_JOIN_BELOW) == below && flag_has(card, GROUP_JOIN_ABOVE) == above) {
+		return;
+	}
+	flag_set(card, GROUP_JOIN_BELOW, below);
+	flag_set(card, GROUP_JOIN_ABOVE, above);
+	lv_obj_set_style_radius(card, role == 2 ? 0 : ROW_RADIUS, 0);
+	lv_obj_invalidate(card);
+}
+
+// A loose label between the cards of a settings page is a note: the design's
+// .note, 18 px in the secondary colour, inset from the cards' edge and spaced
+// off the card above. Section labels (16 px semibold) are left alone. Set only
+// when different, as this runs from the layout event it would otherwise re-fire.
+static void note_style(lv_obj_t *label) {
+	if (lv_obj_get_style_text_font(label, 0) == &font_ui_16_bold || lv_obj_get_style_text_font(label, 0) == &font_ui_18) {
+		return;
+	}
+	// Notes are written in the dim ink; a title in ordinary ink is not one.
+	if (!lv_color_eq(lv_obj_get_style_text_color(label, 0), theme()->text_secondary)) {
+		return;
+	}
+	lv_obj_set_style_text_font(label, &font_ui_18, 0);
+	lv_obj_set_style_pad_left(label, 12, 0);
+	lv_obj_set_style_pad_right(label, 12, 0);
+	lv_obj_set_style_pad_top(label, 8, 0);
+	lv_obj_set_style_pad_bottom(label, 8, 0);
+	lv_obj_set_style_text_line_space(label, 2, 0);
+}
+
+static void group_regroup(lv_obj_t *host) {
+	uint32_t count = lv_obj_get_child_count(host);
+	for (uint32_t i = 0; i < count; i++) {
+		lv_obj_t *child = lv_obj_get_child(host, (int32_t)i);
+		if (lv_obj_check_type(child, &lv_label_class)) {
+			note_style(child);
+		}
+	}
+	lv_obj_t *prev = NULL; // the last visible row, while the run it is in goes on
+	bool prev_joined = false;
+	for (uint32_t i = 0; i <= count; i++) {
+		lv_obj_t *child = i < count ? lv_obj_get_child(host, (int32_t)i) : NULL;
+		if (child && lv_obj_is_hidden(child)) {
+			continue;
+		}
+		bool card = child && flag_has(child, GROUP_CARD);
+		if (prev) {
+			// 0 alone, 1 first, 2 inside, 3 last
+			group_apply(prev, card ? (prev_joined ? 2 : 1) : (prev_joined ? 3 : 0));
+		}
+		prev_joined = card && prev != NULL;
+		prev = card ? child : NULL;
+	}
+}
+
+static void group_layout_cb(lv_event_t *e) { group_regroup(lv_event_get_target(e)); }
+
+// Marks a row as part of its container's groups.
+static void group_join(lv_obj_t *parent, lv_obj_t *card) {
+	flag_add(card, GROUP_CARD);
+	lv_obj_add_event_cb(card, group_draw_cb, LV_EVENT_DRAW_MAIN_END, NULL);
+	if (!flag_has(parent, GROUP_HOST)) {
+		flag_add(parent, GROUP_HOST);
+		lv_obj_set_style_pad_row(parent, 0, 0);
+		lv_obj_add_event_cb(parent, group_layout_cb, LV_EVENT_LAYOUT_CHANGED, NULL);
+	}
+}
+
+void settingsrow_group(lv_obj_t *parent, lv_obj_t *row) {
+	if (parent && row) {
+		lv_obj_set_style_border_width(row, 0, 0);
+		group_join(parent, row);
+	}
+}
+
+lv_obj_t *settingsrow_section(lv_obj_t *parent, const char *text) {
+	lv_obj_t *label = lv_label_create(parent);
+	// Capitals, as the design sets its section labels. Only the ASCII letters
+	// are raised: the other scripts either have no case or are left as written.
+	char upper[96];
+	snprintf(upper, sizeof(upper), "%s", tr(text));
+	for (char *c = upper; *c; c++) {
+		if (*c >= 'a' && *c <= 'z') {
+			*c = (char)(*c - 32);
+		}
+	}
+	lv_label_set_text(label, upper);
+	lv_obj_add_style(label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(label, &font_ui_16_bold, 0);
+	lv_obj_set_style_text_letter_space(label, 1, 0);
+	lv_obj_set_style_text_opa(label, LV_OPA_80, 0);
+	lv_obj_set_width(label, lv_pct(100));
+	lv_obj_set_style_pad_left(label, 8, 0);
+	lv_obj_set_style_pad_top(label, lv_obj_get_child_count(parent) > 1 ? 18 : 6, 0);
+	lv_obj_set_style_pad_bottom(label, 8, 0);
+	return label;
+}
+
+void settingsrow_upper_text(lv_obj_t *label, const char *text) {
+	char upper[96];
+	snprintf(upper, sizeof(upper), "%s", text);
+	for (char *c = upper; *c; c++) {
+		if (*c >= 'a' && *c <= 'z') {
+			*c = (char)(*c - 32);
+		}
+	}
+	lv_label_set_text(label, upper);
+}
+
+void settingsrow_gap(lv_obj_t *parent) {
+	lv_obj_t *gap = lv_obj_create(parent);
+	lv_obj_remove_style_all(gap);
+	lv_obj_set_size(gap, lv_pct(100), 8);
+	lv_obj_set_clickable(gap, false);
+}
+
 // Shared shell for the richer rows: the same card, tall enough for a control
 // underneath the name.
 static lv_obj_t *make_card(lv_obj_t *parent, const char *name, lv_obj_t **value_out, int height) {
@@ -305,6 +517,7 @@ static lv_obj_t *make_card(lv_obj_t *parent, const char *name, lv_obj_t **value_
 	// so the swipe-back drag can start on a toggle or slider card too; the
 	// control inside keeps its own presses.
 	lv_obj_set_event_bubble(card, true);
+	group_join(parent, card);
 
 	lv_obj_t *label = lv_label_create(card);
 	lv_label_set_text(label, tr(name));
@@ -315,8 +528,8 @@ static lv_obj_t *make_card(lv_obj_t *parent, const char *name, lv_obj_t **value_
 	if (value_out) {
 		*value_out = lv_label_create(card);
 		lv_obj_add_style(*value_out, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(*value_out, &font_ui_24, 0);
-		lv_obj_align(*value_out, LV_ALIGN_TOP_RIGHT, 0, 0);
+		lv_obj_set_style_text_font(*value_out, &font_ui_20, 0);
+		lv_obj_align(*value_out, LV_ALIGN_TOP_RIGHT, 0, 3);
 	}
 
 	return card;
@@ -425,7 +638,7 @@ lv_obj_t *settingsrow_slider(lv_obj_t *parent, const char *name, int steps, lv_o
 
 // The switch and the gap the name must not reach into. 68 is the switch, 16 is
 // the space between the two.
-#define TOGGLE_RESERVED (68 + 16)
+#define TOGGLE_RESERVED (72 + 16)
 
 // How far beyond its 68 x 36 a switch still takes a tap: a fingertip on this
 // panel is wider than the switch is tall.
@@ -454,12 +667,14 @@ static void switch_tap_cb(lv_event_t *e) {
 
 lv_obj_t *settingsrow_switch(lv_obj_t *parent, lv_event_cb_t cb) {
 	lv_obj_t *sw = lv_switch_create(parent);
-	lv_obj_set_size(sw, 68, 40);
+	lv_obj_set_size(sw, 72, 40);
 	lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_MAIN);
 	lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
 	lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-	lv_obj_set_style_bg_color(sw, lv_color_white(), LV_PART_KNOB);
-	lv_obj_set_style_pad_all(sw, -3, LV_PART_KNOB);
+	lv_obj_set_style_bg_color(sw, theme()->text_secondary, LV_PART_KNOB);
+	// Dark ink on the amber track: a white knob on amber is barely legible.
+	lv_obj_set_style_bg_color(sw, theme_on_accent(), LV_PART_KNOB | LV_STATE_CHECKED);
+	lv_obj_set_style_pad_all(sw, -4, LV_PART_KNOB);
 	lv_obj_set_style_anim_duration(sw, 160, 0);
 	// Not checkable: the state changes in switch_tap_cb instead of on RELEASED.
 	lv_obj_set_checkable(sw, false);
@@ -694,10 +909,13 @@ lv_obj_t *settingsrow_add(lv_obj_t *parent, const char *name, lv_obj_t **value_o
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 20, 0);
+	lv_obj_set_style_pad_left(row, 20, 0);
+	lv_obj_set_style_pad_right(row, 14, 0);
+	lv_obj_set_style_border_width(row, 0, 0);
 	// Presses bubble up to the page container, so the swipe-back drag can start
 	// on a row and not only in the gaps between rows.
 	lv_obj_set_event_bubble(row, true);
+	group_join(parent, row);
 
 	// Rows live for the whole run, so these action records are never freed.
 	row_action_t *action = malloc(sizeof(*action));
@@ -723,10 +941,12 @@ lv_obj_t *settingsrow_add(lv_obj_t *parent, const char *name, lv_obj_t **value_o
 	if (value_out) {
 		*value_out = lv_label_create(row);
 		lv_obj_add_style(*value_out, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(*value_out, &font_ui_24, 0);
-		lv_obj_align(*value_out, LV_ALIGN_RIGHT_MID, 0, 0);
+		lv_obj_set_style_text_font(*value_out, &font_ui_20, 0);
+		// A row that opens something keeps its chevron; the value sits before it.
+		lv_obj_align(*value_out, LV_ALIGN_RIGHT_MID, cb ? -30 : -6, 0);
 		lv_obj_add_event_cb(*value_out, row_value_resized_cb, LV_EVENT_SIZE_CHANGED, row);
-	} else {
+	}
+	if (!value_out || cb) {
 		// A plain row opens another page, which the chevron announces; rows
 		// with a value use their right edge for the value instead.
 		lv_obj_t *chev = lv_image_create(row);
@@ -783,6 +1003,197 @@ void settingsrow_name_lines(lv_obj_t *row, int lines) {
 // Pill cards
 // ---------------------------------------------------------------------------
 
+// The segmented control of the design: a track in the page colour, radius 14,
+// with the choices inside it sharing its width, the chosen one raised on the
+// row surface. Wraps onto a second line when the choices do not fit one.
+static lv_obj_t *stepper_button(lv_obj_t *row, const lv_image_dsc_t *glyph, lv_event_cb_t cb, intptr_t delta) {
+	lv_obj_t *btn = lv_btn_create(row);
+	lv_obj_set_size(btn, 60, 60);
+	lv_obj_add_style(btn, &theme_style_card_pressed, 0);
+	lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_shadow_width(btn, 0, 0);
+	lv_obj_set_style_border_width(btn, 0, 0);
+	lv_obj_set_style_opa(btn, LV_OPA_70, LV_STATE_PRESSED);
+	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)delta);
+	lv_obj_t *icon = lv_image_create(btn);
+	lv_image_set_src(icon, glyph);
+	lv_obj_add_style(icon, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+	lv_obj_center(icon);
+	return btn;
+}
+
+lv_obj_t *settingsrow_stepper(lv_obj_t *parent, const char *name, const char *subtitle, lv_obj_t **value_out,
+							  lv_event_cb_t cb) {
+	lv_obj_t *row = lv_obj_create(parent);
+	lv_obj_set_width(row, lv_pct(100));
+	lv_obj_set_height(row, subtitle ? 88 : ROW_HEIGHT);
+	lv_obj_add_style(row, &theme_style_card, 0);
+	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
+	lv_obj_set_style_border_width(row, 0, 0);
+	lv_obj_set_style_shadow_width(row, 0, 0);
+	lv_obj_set_style_pad_left(row, 20, 0);
+	lv_obj_set_style_pad_right(row, 12, 0);
+	lv_obj_set_style_pad_ver(row, 0, 0);
+	lv_obj_set_style_pad_column(row, 6, 0);
+	lv_obj_set_scrollable(row, false);
+	lv_obj_set_event_bubble(row, true);
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	group_join(parent, row);
+
+	lv_obj_t *text = lv_obj_create(row);
+	lv_obj_remove_style_all(text);
+	lv_obj_set_height(text, LV_SIZE_CONTENT);
+	lv_obj_set_flex_grow(text, 1);
+	lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_style_pad_row(text, 2, 0);
+	lv_obj_t *label = lv_label_create(text);
+	lv_label_set_text(label, tr(name));
+	lv_obj_add_style(label, &theme_style_text, 0);
+	lv_obj_set_style_text_font(label, &font_ui_24, 0);
+	if (subtitle) {
+		lv_obj_t *sub = lv_label_create(text);
+		lv_label_set_text(sub, tr(subtitle));
+		lv_obj_add_style(sub, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(sub, &font_ui_18, 0);
+	}
+
+	stepper_button(row, &icon_minus, cb, -1);
+	lv_obj_t *value = lv_label_create(row);
+	lv_obj_set_width(value, 40);
+	lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_add_style(value, &theme_style_text, 0);
+	lv_obj_set_style_text_font(value, &font_ui_24_bold, 0);
+	lv_label_set_text(value, "");
+	stepper_button(row, &icon_plus, cb, 1);
+	if (value_out) {
+		*value_out = value;
+	}
+	return row;
+}
+
+lv_obj_t *settingsrow_subtitle(lv_obj_t *row, const char *text) {
+	lv_obj_t *name = row ? lv_obj_get_child(row, 0) : NULL;
+	if (!name) {
+		return NULL;
+	}
+	lv_obj_set_height(row, 92);
+	lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+	lv_obj_set_height(name, lv_font_get_line_height(&font_ui_24));
+	lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, -14);
+	lv_obj_t *line = lv_label_create(row);
+	lv_label_set_text(line, tr(text));
+	lv_label_set_long_mode(line, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(line, lv_pct(100));
+	lv_obj_set_style_pad_right(line, TOGGLE_RESERVED, 0);
+	lv_obj_add_style(line, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(line, &font_ui_18, 0);
+	lv_obj_align(line, LV_ALIGN_LEFT_MID, 0, 16);
+	return line;
+}
+
+lv_obj_t *settingsrow_empty(lv_obj_t *parent, const lv_image_dsc_t *glyph, bool accent, const char *title,
+							const char *body, lv_obj_t **title_out, lv_obj_t **body_out) {
+	lv_obj_t *box = lv_obj_create(parent);
+	lv_obj_remove_style_all(box);
+	lv_obj_set_width(box, lv_pct(100));
+	lv_obj_set_height(box, LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_style_pad_row(box, 14, 0);
+	lv_obj_set_style_pad_hor(box, 24, 0);
+	lv_obj_set_style_pad_top(box, 40, 0);
+	lv_obj_set_event_bubble(box, true);
+
+	lv_obj_t *disc = lv_obj_create(box);
+	lv_obj_remove_style_all(disc);
+	lv_obj_add_style(disc, &theme_style_card, 0);
+	lv_obj_set_size(disc, 128, 128);
+	lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
+	lv_obj_set_scrollable(disc, false);
+	if (glyph) {
+		lv_obj_t *icon = lv_image_create(disc);
+		lv_image_set_src(icon, glyph);
+		lv_obj_add_style(icon, &theme_style_icon, 0);
+		lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+		lv_obj_set_style_image_recolor(icon, accent ? theme()->accent : theme()->text_secondary, 0);
+		// The glyphs come at 46 px or less; the design draws this one at 52.
+		int side = (int)glyph->header.w;
+		if (side > 0 && side < 52) {
+			lv_image_set_scale(icon, (uint32_t)(256 * 52 / side));
+		}
+		lv_obj_center(icon);
+	}
+
+	lv_obj_t *t = NULL, *b = NULL;
+	if (title) {
+		t = lv_label_create(box);
+		lv_label_set_text(t, tr(title));
+		lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+		lv_obj_set_width(t, lv_pct(100));
+		lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_CENTER, 0);
+		lv_obj_add_style(t, &theme_style_text, 0);
+		lv_obj_set_style_text_font(t, &font_ui_28_bold, 0);
+	}
+	if (body) {
+		b = lv_label_create(box);
+		lv_label_set_text(b, tr(body));
+		lv_label_set_long_mode(b, LV_LABEL_LONG_WRAP);
+		lv_obj_set_width(b, lv_pct(100));
+		lv_obj_set_style_text_align(b, LV_TEXT_ALIGN_CENTER, 0);
+		lv_obj_add_style(b, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(b, &font_ui_20, 0);
+		lv_obj_set_style_text_line_space(b, 4, 0);
+	}
+	if (title_out) {
+		*title_out = t;
+	}
+	if (body_out) {
+		*body_out = b;
+	}
+	return box;
+}
+
+lv_obj_t *settingsrow_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *user_data) {
+	lv_obj_t *btn = lv_btn_create(parent);
+	lv_obj_set_size(btn, lv_pct(100), 72);
+	lv_obj_add_style(btn, &theme_style_card_pressed, 0);
+	lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+	lv_obj_set_style_radius(btn, 36, 0);
+	lv_obj_set_style_shadow_width(btn, 0, 0);
+	lv_obj_set_style_border_width(btn, 0, 0);
+	lv_obj_set_style_pad_hor(btn, 16, 0);
+	lv_obj_set_style_opa(btn, LV_OPA_70, LV_STATE_PRESSED);
+	lv_obj_set_event_bubble(btn, true);
+	if (cb) {
+		lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
+	}
+	lv_obj_t *label = lv_label_create(btn);
+	lv_label_set_text(label, tr(text));
+	lv_obj_add_style(label, &theme_style_text, 0);
+	lv_obj_set_style_text_font(label, &font_ui_22, 0);
+	lv_obj_center(label);
+	return btn;
+}
+
+lv_obj_t *settingsrow_segmented(lv_obj_t *parent) {
+	lv_obj_t *track = lv_obj_create(parent);
+	lv_obj_set_size(track, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_add_style(track, &theme_style_screen, 0);
+	lv_obj_set_style_radius(track, 14, 0);
+	lv_obj_set_style_border_width(track, 0, 0);
+	lv_obj_set_style_pad_all(track, 4, 0);
+	lv_obj_set_style_pad_gap(track, 4, 0);
+	lv_obj_set_scrollable(track, false);
+	lv_obj_set_event_bubble(track, true);
+	lv_obj_set_flex_flow(track, LV_FLEX_FLOW_ROW_WRAP);
+	lv_obj_set_flex_align(track, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+	return track;
+}
+
 // A toggle card with its choices on pills underneath, shown only while the
 // switch is on. The same shape the audiobook options page uses, and here for
 // the same reason: "track or album" means nothing while ReplayGain is off.
@@ -825,16 +1236,7 @@ lv_obj_t *settingsrow_toggle_pills(lv_obj_t *parent, const char *title, lv_event
 
 	lv_obj_t *toggle = settingsrow_switch(head, toggle_cb);
 
-	lv_obj_t *pills = lv_obj_create(card);
-	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(pills, 0, 0);
-	lv_obj_set_style_border_width(pills, 0, 0);
-	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 12, 0);
-	lv_obj_set_scrollable(pills, false);
-	lv_obj_set_event_bubble(pills, true);
-	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+	lv_obj_t *pills = settingsrow_segmented(card);
 
 	*switch_out = toggle;
 	*pills_out = pills;
@@ -864,16 +1266,7 @@ lv_obj_t *settingsrow_pills(lv_obj_t *parent, const char *title, lv_obj_t **pill
 	lv_obj_add_style(name, &theme_style_text, 0);
 	lv_obj_set_style_text_font(name, &font_ui_24, 0);
 
-	lv_obj_t *pills = lv_obj_create(card);
-	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(pills, 0, 0);
-	lv_obj_set_style_border_width(pills, 0, 0);
-	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 12, 0);
-	lv_obj_set_scrollable(pills, false);
-	lv_obj_set_event_bubble(pills, true);
-	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+	lv_obj_t *pills = settingsrow_segmented(card);
 
 	*pills_out = pills;
 	return card;
@@ -881,16 +1274,19 @@ lv_obj_t *settingsrow_pills(lv_obj_t *parent, const char *title, lv_obj_t **pill
 
 static lv_obj_t *pill_make(lv_obj_t *parent, const char *label_text, int value, lv_event_cb_t cb) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-	lv_obj_set_style_pad_hor(btn, 26, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, 52);
+	lv_obj_set_flex_grow(btn, 1);
+	lv_obj_set_style_pad_hor(btn, 18, 0);
+	lv_obj_set_style_radius(btn, 10, 0); // a segment of the control
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
+	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
 	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)(intptr_t)value);
 
 	lv_obj_t *label = lv_label_create(btn);
 	lv_label_set_text(label, label_text);
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
+	lv_obj_set_style_text_font(label, &font_ui_18_bold, 0);
+	lv_obj_set_style_text_color(label, theme()->text_secondary, 0);
 	lv_obj_center(label);
 
 	return btn;
@@ -908,8 +1304,9 @@ void settingsrow_pill_active(lv_obj_t *pill, bool active) {
 	if (!pill) {
 		return;
 	}
-	lv_obj_set_style_bg_color(pill, active ? theme()->accent : theme()->surface_pressed, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(pill, 0), active ? lv_color_white() : theme()->text_primary, 0);
+	lv_obj_set_style_bg_color(pill, theme()->surface_pressed, 0);
+	lv_obj_set_style_bg_opa(pill, active ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+	lv_obj_set_style_text_color(lv_obj_get_child(pill, 0), active ? theme()->text_primary : theme()->text_secondary, 0);
 }
 
 // ---------------------------------------------------------------------------

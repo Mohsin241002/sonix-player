@@ -124,8 +124,20 @@ static bool wifi_link_is_up(void) { return link_missing_ticks < WT_LINK_GRACE_TI
 
 static bool switch_is_on(void) { return lv_obj_has_state(toggle, LV_STATE_CHECKED); }
 
-static void hide(lv_obj_t *obj) { lv_obj_set_hidden(obj, true); }
-static void show(lv_obj_t *obj) { lv_obj_set_hidden(obj, false); }
+// The address sits on a card of its own; the card comes and goes with it.
+static lv_obj_t *url_card;
+static void hide(lv_obj_t *obj) {
+	lv_obj_set_hidden(obj, true);
+	if (obj == url_label && url_card) {
+		lv_obj_set_hidden(url_card, true);
+	}
+}
+static void show(lv_obj_t *obj) {
+	lv_obj_set_hidden(obj, false);
+	if (obj == url_label && url_card) {
+		lv_obj_set_hidden(url_card, false);
+	}
+}
 
 // lv_label_set_text reallocates and invalidates whether or not the text
 // changed, so setting the same five labels twice a second would redraw the
@@ -476,9 +488,10 @@ static void refresh_accent(void) {
 // ---------------------------------------------------------------------------
 
 void wifitransfer_page_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(wifitransfer_screen, cfg, "transfer");
+	lv_obj_t *container = settingsrow_playback_page(wifitransfer_screen, cfg, "transfer");
 
-	settingsrow_toggle(container, "wifitransfer_title", &toggle, toggle_changed_cb);
+	lv_obj_t *row = settingsrow_toggle(container, "wifitransfer_title", &toggle, toggle_changed_cb);
+	settingsrow_subtitle(row, "wifitransfer_subtitle");
 
 	status_label = lv_label_create(container);
 	lv_obj_set_width(status_label, lv_pct(100));
@@ -491,14 +504,30 @@ void wifitransfer_page_init(gui_config_t *cfg) {
 
 	// The address, which is the whole point of the page: big, centred, and in
 	// the accent colour, the way the stock page prints it in blue.
-	url_label = lv_label_create(container);
+	// On a card under a small label, as the design has it.
+	url_card = lv_obj_create(container);
+	lv_obj_set_size(url_card, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_add_style(url_card, &theme_style_card, 0);
+	lv_obj_set_style_radius(url_card, 20, 0);
+	lv_obj_set_style_border_width(url_card, 0, 0);
+	lv_obj_set_style_shadow_width(url_card, 0, 0);
+	lv_obj_set_style_pad_all(url_card, 20, 0);
+	lv_obj_set_style_pad_row(url_card, 10, 0);
+	lv_obj_set_style_margin_top(url_card, 12, 0);
+	lv_obj_set_scrollable(url_card, false);
+	lv_obj_set_flex_flow(url_card, LV_FLEX_FLOW_COLUMN);
+	lv_obj_t *url_head = lv_label_create(url_card);
+	settingsrow_upper_text(url_head, tr("wifitransfer_open_address"));
+	lv_obj_add_style(url_head, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(url_head, &font_ui_16_bold, 0);
+	lv_obj_set_style_text_letter_space(url_head, 1, 0);
+	url_label = lv_label_create(url_card);
 	lv_obj_set_width(url_label, lv_pct(100));
 	lv_label_set_long_mode(url_label, LV_LABEL_LONG_WRAP);
 	lv_obj_add_style(url_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(url_label, &font_ui_32, 0);
+	lv_obj_set_style_text_font(url_label, &font_ui_32_bold, 0);
 	lv_obj_set_style_text_color(url_label, theme()->accent, 0);
-	lv_obj_set_style_text_align(url_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_ver(url_label, 16, 0);
+	lv_obj_set_style_text_align(url_label, LV_TEXT_ALIGN_LEFT, 0);
 
 	// The address, quieter and under the name: a fallback, not a second offer.
 	addr_label = lv_label_create(container);

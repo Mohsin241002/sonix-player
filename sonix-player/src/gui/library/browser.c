@@ -1,4 +1,5 @@
 #include "browser.h"
+#include "src/gui/shell/navbar.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -1641,8 +1642,9 @@ void browser_init(gui_config_t *cfg) {
 
 	int content_top = settingsrow_content_top(cfg);
 
+	int footer = navbar_use_shared_mini(browser_screen, cfg);
 	lv_obj_t *screen_container = lv_obj_create(browser_screen);
-	lv_obj_set_size(screen_container, lv_pct(100), cfg->screen_height - content_top);
+	lv_obj_set_size(screen_container, lv_pct(100), cfg->screen_height - content_top - footer);
 	lv_obj_align(screen_container, LV_ALIGN_TOP_LEFT, 0, content_top);
 	lv_obj_set_style_bg_opa(screen_container, 0, 0);
 	lv_obj_set_style_border_width(screen_container, 0, 0);

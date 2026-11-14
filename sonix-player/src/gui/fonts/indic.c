@@ -40,6 +40,9 @@ static face_t faces[] = {
     {HB_SCRIPT_MEETEI_MAYEK, "NotoSansMeeteiMayek-Regular.ttf"},
 };
 #define FACE_COUNT (sizeof(faces) / sizeof(faces[0]))
+// Keep simultaneous lyric sizes alive while their shaped labels reference them.
+#define FACE_VARIANTS 64
+static face_t variants[FACE_VARIANTS];
 
 typedef struct { void *data; size_t size; } mapping_t;
 typedef struct {
@@ -68,18 +71,25 @@ static void mapping_free(void *user) {
 
 static void faces_close(void) {
     if (live_labels) return;
-    for (size_t i = 0; i < FACE_COUNT; i++) {
-        if (faces[i].hb) hb_font_destroy(faces[i].hb);
-        if (faces[i].font) lv_freetype_font_delete(faces[i].font);
-        faces[i].hb = NULL;
-        faces[i].font = NULL;
-        faces[i].pixels = 0;
+    for (size_t i = 0; i < FACE_VARIANTS; i++) {
+        if (variants[i].hb) hb_font_destroy(variants[i].hb);
+        if (variants[i].font) lv_freetype_font_delete(variants[i].font);
+        variants[i].hb = NULL;
+        variants[i].font = NULL;
+        variants[i].pixels = 0;
     }
 }
 
 static face_t *face_open(unsigned i, int pixels) {
-    face_t *f = &faces[i];
-    if (f->hb) return f->pixels == pixels ? f : NULL;
+    face_t *f = NULL;
+    for (unsigned j = 0; j < FACE_VARIANTS; j++) {
+        if (variants[j].hb && variants[j].script == faces[i].script && variants[j].pixels == pixels)
+            return &variants[j];
+        if (!variants[j].hb && !f) f = &variants[j];
+    }
+    if (!f) return NULL;
+    f->script = faces[i].script;
+    f->file = faces[i].file;
     const char *dir = FONT_DIR;
 #ifdef HOST_BUILD
     const char *override = getenv("SONIX_INDIC_FONT_DIR");
@@ -177,7 +187,7 @@ static bool shape_run(shaped_t *s, unsigned face, int pixels, const char *text, 
         glyph_t *g = &s->glyphs[index];
         *g = (glyph_t){info[i].codepoint, advance, slot->bitmap.width, slot->bitmap.rows,
             slot->bitmap_left + rounded(pen + pos[i].x_offset) - rounded(pen),
-            slot->bitmap_top - (int)slot->bitmap.rows + rounded(pos[i].y_offset), face};
+            slot->bitmap_top - (int)slot->bitmap.rows + rounded(pos[i].y_offset), (uint8_t)(f - variants)};
         tokens[(*n)++] = (token_t){TOKEN_BASE + index, advance, i == 0 || info[i].cluster != info[i - 1].cluster};
         pen += pos[i].x_advance;
         int ascent = s->font.line_height - s->font.base_line;
@@ -220,7 +230,7 @@ static const lv_font_t *bitmap_font(const shaped_t *s, lv_font_glyph_dsc_t *d) {
         if (d->gid.index >= s->count) return NULL;
         const glyph_t *g = &s->glyphs[d->gid.index];
         d->gid.index = g->gid;
-        d->resolved_font = faces[g->face].font;
+        d->resolved_font = variants[g->face].font;
     }
     return d->resolved_font;
 }
@@ -242,12 +252,15 @@ static void glyph_release(const lv_font_t *font, lv_font_glyph_dsc_t *d) {
     d->entry = NULL;
 }
 
-static void label_deleted(lv_event_t *e) {
-    shaped_t *s = lv_event_get_user_data(e);
+static void shaped_free(shaped_t *s) {
     memory_used -= s->bytes;
     free(s->glyphs); free(s);
     live_labels--;
     faces_close();
+}
+
+static void label_deleted(lv_event_t *e) {
+    shaped_free(lv_event_get_user_data(e));
 }
 
 bool indic_label_set_text(lv_obj_t *label, const char *text, const lv_font_t *base, int pixels, int width) {
@@ -317,6 +330,16 @@ bool indic_label_set_text(lv_obj_t *label, const char *text, const lv_font_t *ba
     lv_obj_set_style_text_font(label, &s->font, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
     lv_label_set_text(label, encoded);
+    // Publish the replacement before freeing the old context, so shared font
+    // faces stay alive even when this is the only shaped label on screen.
+    for (uint32_t i = lv_obj_get_event_count(label); i > 0; i--) {
+        lv_event_dsc_t *event = lv_obj_get_event_dsc(label, i - 1);
+        if (lv_event_dsc_get_cb(event) == label_deleted) {
+            shaped_t *old = lv_event_dsc_get_user_data(event);
+            lv_obj_remove_event(label, i - 1);
+            shaped_free(old);
+        }
+    }
     lv_obj_add_event_cb(label, label_deleted, LV_EVENT_DELETE, s);
     free(encoded);
     return true;

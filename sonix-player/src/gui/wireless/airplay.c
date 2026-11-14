@@ -31,6 +31,7 @@ lv_obj_t *airplay_screen;
 
 static lv_obj_t *toggle;
 static lv_obj_t *glyph;
+static lv_obj_t *empty_title; // the empty state's line: what the page is for
 static lv_obj_t *title_label;
 static lv_obj_t *artist_label;
 static lv_obj_t *album_label;
@@ -66,7 +67,7 @@ static void set_line(lv_obj_t *label, const char *text) {
 // Everything under the switch belongs to a running receiver; with the switch
 // off there is nothing for it to say.
 static void hide_receiver(void) {
-	hide(glyph);
+	show(empty_title);
 	hide(title_label);
 	hide(artist_label);
 	hide(album_label);
@@ -116,7 +117,11 @@ static void refresh(void) {
 	airplay_state_t s;
 	airplay_get_state(&s);
 
-	show(glyph);
+	if (s.title[0]) {
+		hide(empty_title); // the track takes its place
+	} else {
+		show(empty_title);
+	}
 	set_line(title_label, s.title);
 	set_line(artist_label, s.artist);
 	set_line(album_label, s.album);
@@ -233,20 +238,15 @@ static void wifi_row_cb(lv_event_t *e) {
 // ---------------------------------------------------------------------------
 
 void airplay_page_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(airplay_screen, cfg, "airplay");
+	lv_obj_t *container = settingsrow_playback_page(airplay_screen, cfg, "airplay");
 
-	settingsrow_toggle(container, "airplay", &toggle, toggle_changed_cb);
+	lv_obj_t *row = settingsrow_toggle(container, "airplay_receiver", &toggle, toggle_changed_cb);
+	settingsrow_subtitle(row, "airplay_needs_wifi");
 
 	// No artwork: the receiver has one job and a picture of the last track is
-	// not part of it. What is left is the section's own glyph, quiet enough to
-	// read as a mark rather than a control.
-	glyph = lv_image_create(container);
-	lv_image_set_src(glyph, &icon_airplay_page);
-	lv_obj_add_style(glyph, &theme_style_icon, 0);
-	lv_obj_set_style_image_opa(glyph, LV_OPA_40, 0);
-	lv_obj_set_style_margin_top(glyph, 40, 0);
-	lv_obj_set_style_margin_bottom(glyph, 28, 0);
-	lv_obj_set_style_align(glyph, LV_ALIGN_CENTER, 0);
+	// not part of it. The design's empty state instead: the section's glyph on
+	// a disc and a line saying what the page is for.
+	glyph = settingsrow_empty(container, &icon_airplay_quick, false, "airplay_empty_title", NULL, &empty_title, NULL);
 
 	title_label = lv_label_create(container);
 	lv_obj_set_width(title_label, lv_pct(100));

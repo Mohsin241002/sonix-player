@@ -2161,6 +2161,60 @@ bool cover_thumb_cached(const char *path, int size, cover_image_t *out) {
 	return false;
 }
 
+// The sizes thumbnails are, or once were, asked for. A miss at one of them is
+// first looked for at the others: the same file's picture already shrunk to
+// 72 px is a few kilobytes read back and a resample of a few thousand pixels,
+// against reading the artwork out of the music file and decoding the JPEG.
+// That is the whole cost of a change of thumbnail size (72 -> 60 for list
+// rows in the redesign), which would otherwise decode the library again.
+// Only larger donors: a picture blown up from a smaller one would look soft.
+static const int THUMB_DONOR_SIZES[] = {60, 72, 96, 108, 124, 144, 168, 210, 216};
+
+// The picture of `path` at `size`, made from the same file's thumbnail at
+// another size. True when the cache had one; *has_image then says whether it
+// was a picture or a cached "no artwork", and `out` holds the picture.
+static bool thumb_from_donor(const char *path, bool is_dir, int size, cover_image_t *out, bool *has_image) {
+	for (size_t i = 0; i < sizeof(THUMB_DONOR_SIZES) / sizeof(THUMB_DONOR_SIZES[0]); i++) {
+		int donor_size = THUMB_DONOR_SIZES[i];
+		if (donor_size <= size) {
+			continue;
+		}
+		char donor_key[32];
+		if (!thumb_key(donor_key, sizeof(donor_key), path, donor_size, is_dir)) {
+			continue;
+		}
+		cover_image_t donor;
+		bool donor_has = false;
+		if (!thumb_db_load(donor_key, &donor, &donor_has)) {
+			continue;
+		}
+		if (!donor_has) {
+			*has_image = false;
+			return true;
+		}
+		raw_image_t raw;
+		bool ok = raw_from_cover(&donor, &raw);
+		cover_free(&donor);
+		if (ok) {
+			ok = make_scaled(&raw, size, size, COVER_FIT_CONTAIN, out);
+			raw_free(&raw);
+		}
+		if (ok) {
+			*has_image = true;
+			return true;
+		}
+	}
+	return false;
+}
+
+// The thumbnail cache by picture rather than by file: the tracks of an album
+// nearly always carry the same embedded artwork, and keyed by file each of
+// them decoded it again. Keyed by the artwork's own hash (cover_source_id) the
+// album decodes once and every other track reads the picture back.
+static void thumb_id_key(char *out, size_t out_size, uint64_t id, int size) {
+	snprintf(out, out_size, "i%016llx_%d", (unsigned long long)id, size);
+}
+
 bool cover_thumb_load(const char *path, bool is_dir, int size, cover_image_t *out) {
 	memset(out, 0, sizeof(*out));
 
@@ -2182,7 +2236,45 @@ bool cover_thumb_load(const char *path, bool is_dir, int size, cover_image_t *ou
 		}
 	}
 
-	cover_build_t built = thumb_load_uncached(path, is_dir, size, out);
+	// Before decoding: the same file at another size, then the same picture
+	// from another file.
+	if (cacheable) {
+		bool has_image = false;
+		if (thumb_from_donor(path, is_dir, size, out, &has_image)) {
+			thumb_db_store(key, out, has_image);
+			return has_image;
+		}
+	}
+	uint64_t source_id = 0;
+	int source_index = -1;
+	char id_key[48] = "";
+	if (cacheable && !is_dir) {
+		source_id = player_source_id(path, &source_index);
+		if (source_id) {
+			thumb_id_key(id_key, sizeof(id_key), source_id, size);
+			bool has_image = false;
+			if (thumb_db_load(id_key, out, &has_image) && has_image) {
+				thumb_db_store(key, out, true);
+				return true;
+			}
+			cover_free(out);
+		}
+	}
+
+	cover_build_t built;
+	if (id_key[0]) {
+		image_request_t req = {.w = size, .h = size, .fit = COVER_FIT_CONTAIN, .backdrop = false};
+		int used = -1;
+		built = build_from_sources_at(path, false, &req, 1, out, &used);
+		// Shared only when the picture really is the one the hash was taken
+		// of: a first candidate that failed to decode sent the build on to
+		// another, whose picture the hash does not describe.
+		if (built == COVER_BUILD_OK && used == source_index) {
+			thumb_db_store(id_key, out, true);
+		}
+	} else {
+		built = thumb_load_uncached(path, is_dir, size, out);
+	}
 
 	// "There is no artwork here" is worth storing too: a folder without any is
 	// otherwise rescanned from scratch every time it scrolls past.

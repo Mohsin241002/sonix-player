@@ -1,4 +1,5 @@
 #include "trackmenu.h"
+#include "src/gui/shell/navbar.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -45,9 +46,9 @@ lv_obj_t *details_screen;
 // widgets rides the scroll position, and each row looks up its title (one
 // indexed database lookup) at the moment it binds. Opening the page costs a
 // dozen binds, not hundreds, which is what makes it instant.
-#define QUEUE_THUMB_SIZE 56
-#define QUEUE_ROW_HEIGHT 72
-#define QUEUE_ROW_GAP 8
+#define QUEUE_THUMB_SIZE 60
+#define QUEUE_ROW_HEIGHT 84
+#define QUEUE_ROW_GAP 0
 #define QUEUE_ROW_PITCH (QUEUE_ROW_HEIGHT + QUEUE_ROW_GAP)
 #define QUEUE_ROW_POOL 12
 #define QUEUE_GRIP_SIZE 56
@@ -81,6 +82,7 @@ typedef struct {
 	lv_obj_t *button;
 	lv_obj_t *icon;
 	lv_obj_t *label;
+	lv_obj_t *artist; // under the title; empty on a row of the history
 	lv_obj_t *check; // the tick on a chosen row while choosing
 	lv_obj_t *grip;	 // the handle on a row that can be moved, while reordering
 	int vindex;		 // the row of the page it shows (see queue_vrow_y), or -1
@@ -247,7 +249,9 @@ static void queue_row_paint_check(queue_row_t *row) {
 // shows of the mode the page is in.
 static void queue_row_paint_tools(queue_row_t *row) {
 	queue_row_paint_check(row);
-	bool grip = queue_mode == QUEUE_REORDER && row->index > queue_current && row->index < queue_total;
+	// On every track still to come, as the design has it: the grip carries the
+	// row whenever the page is not choosing rows.
+	bool grip = queue_mode != QUEUE_SELECT && row->hist < 0 && row->index > queue_current && row->index < queue_total;
 	lv_obj_set_hidden(row->grip, !grip);
 	bool carried = queue_drag.active && ((row->index >= 0 && row->index == queue_drag.from) || (row->hist >= 0 && queue_hist[row->hist].id == queue_drag.hist_id));
 	lv_opa_t opa = carried ? LV_OPA_40 : LV_OPA_COVER;
@@ -272,7 +276,9 @@ static void queue_mode_show(void) {
 	bool select = queue_mode == QUEUE_SELECT;
 	bool reorder = queue_mode == QUEUE_REORDER;
 	lv_obj_set_hidden(queue_select_btn, !idle);
-	lv_obj_set_hidden(queue_reorder_btn, !(idle || reorder));
+	// The grips move rows at any time now; the mode button stays only to leave
+	// a reorder already under way.
+	lv_obj_set_hidden(queue_reorder_btn, !reorder);
 	lv_obj_set_hidden(queue_remove_btn, !select);
 	lv_obj_set_hidden(queue_close_btn, !select);
 
@@ -285,7 +291,7 @@ static void queue_mode_show(void) {
 	// The bin is there from the start, faded until something is chosen.
 	lv_obj_set_style_opa(queue_remove_btn, queue_chosen_count > 0 ? LV_OPA_COVER : LV_OPA_40, 0);
 
-	settingsrow_title_corner_slots(queue_title, g_cfg, idle || select ? 2 : (reorder ? 1 : 0));
+	settingsrow_title_corner_slots(queue_title, g_cfg, select ? 2 : (idle || reorder ? 1 : 0));
 	queue_paint_rows();
 }
 
@@ -380,15 +386,36 @@ static void queue_row_paint_mark(queue_row_t *row) {
 	if (!row->icon || row->vindex < 0) {
 		return;
 	}
-	bool is_playing_row = row->index >= 0 && row->index == playlist_current_index();
-	lv_image_set_src(row->icon, is_playing_row ? &icon_now_playing : &icon_music2);
-	lv_obj_add_style(row->icon, &theme_style_icon, 0);
+	bool is_playing_row = row->hist < 0 && row->index >= 0 && row->index == playlist_current_index();
+	// Only the track playing has a picture: its cover, the one the mini-player
+	// shows. The rows still to come are text, which reads faster down a list.
+	lv_obj_set_hidden(row->icon, !is_playing_row);
 	if (is_playing_row) {
-		lv_obj_set_style_image_recolor(row->icon, theme()->accent, 0);
-	} else {
-		lv_obj_remove_local_style_prop(row->icon, LV_STYLE_IMAGE_RECOLOR, 0);
+		const lv_image_dsc_t *cover = navbar_thumb();
+		if (cover) {
+			lv_obj_remove_style(row->icon, &theme_style_icon, 0);
+			lv_obj_set_style_image_recolor_opa(row->icon, LV_OPA_TRANSP, 0); // a picture, not a glyph to tint
+			lv_image_set_src(row->icon, cover);
+			lv_image_set_inner_align(row->icon, LV_IMAGE_ALIGN_STRETCH);
+			lv_obj_set_style_radius(row->icon, 8, 0);
+		} else {
+			lv_image_set_src(row->icon, &icon_now_playing);
+			lv_image_set_inner_align(row->icon, LV_IMAGE_ALIGN_CENTER);
+			lv_obj_add_style(row->icon, &theme_style_icon, 0);
+			lv_obj_set_style_image_recolor_opa(row->icon, LV_OPA_COVER, 0);
+			lv_obj_set_style_image_recolor(row->icon, theme()->accent, 0);
+		}
 	}
-	lv_obj_set_style_image_recolor_opa(row->icon, LV_OPA_COVER, 0);
+	// The row that is playing: its title in the accent, on a card of its own.
+	if (row->label) {
+		if (is_playing_row) {
+			lv_obj_set_style_text_color(row->label, theme()->accent, 0);
+			lv_obj_set_style_bg_opa(row->button, LV_OPA_COVER, 0);
+		} else {
+			lv_obj_remove_local_style_prop(row->label, LV_STYLE_TEXT_COLOR, 0);
+			lv_obj_set_style_bg_opa(row->button, LV_OPA_TRANSP, 0);
+		}
+	}
 }
 
 // A title for a file with none: its name, without the extension.
@@ -435,6 +462,7 @@ static void queue_row_bind(queue_row_t *row, int vindex) {
 		lv_obj_set_hidden(row->button, false);
 		lv_obj_set_y(row->button, queue_vrow_y(vindex));
 		lv_label_set_text(row->label, title);
+		lv_obj_set_hidden(row->artist, true);
 		queue_row_paint_mark(row);
 		queue_row_paint_tools(row);
 		return;
@@ -466,6 +494,12 @@ static void queue_row_bind(queue_row_t *row, int vindex) {
 	lv_obj_set_hidden(row->button, false);
 	lv_obj_set_y(row->button, queue_row_y(index));
 	lv_label_set_text(row->label, title);
+	{
+		char name[256], artist[256] = "";
+		library_track_names(path, name, sizeof(name), artist, sizeof(artist));
+		lv_label_set_text(row->artist, artist);
+		lv_obj_set_hidden(row->artist, !artist[0]);
+	}
 
 	queue_row_paint_mark(row);
 	queue_row_paint_tools(row);
@@ -1024,7 +1058,7 @@ static void queue_drag_follow(lv_point_t point) {
 static void queue_drag_cb(lv_event_t *e) {
 	lv_event_code_t code = lv_event_get_code(e);
 	lv_obj_t *target = lv_event_get_current_target(e);
-	if (code == LV_EVENT_PRESSED && queue_mode == QUEUE_REORDER && !queue_drag.active) {
+	if (code == LV_EVENT_PRESSED && queue_mode != QUEUE_SELECT && !queue_drag.active) {
 		// A grip, taken hold of.
 		for (int i = 0; i < QUEUE_ROW_POOL; i++) {
 			queue_row_t *row = &queue_rows[i];
@@ -1224,10 +1258,19 @@ static lv_obj_t *queue_corner_button(gui_config_t *cfg, int slot, const lv_image
 
 static lv_obj_t *queue_header(const char *tag, int y) {
 	lv_obj_t *label = lv_label_create(queue_body);
-	lv_label_set_text(label, tr(tag));
-	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_22_bold, 0);
-	lv_obj_set_pos(label, 4, y + 10);
+	// A section label, in the design's small capitals.
+	char upper[96];
+	snprintf(upper, sizeof(upper), "%s", tr(tag));
+	for (char *c = upper; *c; c++) {
+		if (*c >= 'a' && *c <= 'z') {
+			*c = (char)(*c - 32);
+		}
+	}
+	lv_label_set_text(label, upper);
+	lv_obj_add_style(label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(label, &font_ui_16_bold, 0);
+	lv_obj_set_style_text_letter_space(label, 1, 0);
+	lv_obj_set_pos(label, 8, y + 16);
 	lv_obj_set_hidden(label, true);
 	return label;
 }
@@ -1237,12 +1280,12 @@ static void build_queue_page(gui_config_t *cfg) {
 	queue_title = settingsrow_title(queue_screen, cfg, "trackmenu_queue");
 	// Two pairs in the same two places: the ways in, and choosing.
 	queue_reorder_btn = queue_corner_button(cfg, 0, &icon_arrow_down_up, queue_reorder_cb);
-	queue_select_btn = queue_corner_button(cfg, 1, &icon_select_mode, queue_select_cb);
+	queue_select_btn = queue_corner_button(cfg, 0, &icon_select_mode, queue_select_cb);
 	queue_close_btn = queue_corner_button(cfg, 0, &icon_close, queue_close_cb);
 	queue_remove_btn = queue_corner_button(cfg, 1, &icon_trash, queue_remove_cb);
 
 	int content_top = settingsrow_content_top(cfg);
-	int width = cfg->screen_width - 2 * cfg->padding;
+	int width = cfg->screen_width - 2 * 12;
 	queue_view_h = cfg->screen_height - content_top;
 
 	queue_list = lv_obj_create(queue_screen);
@@ -1251,7 +1294,7 @@ static void build_queue_page(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(queue_list, 0, 0);
 	lv_obj_set_style_border_width(queue_list, 0, 0);
 	lv_obj_set_style_radius(queue_list, 0, 0);
-	lv_obj_set_style_pad_hor(queue_list, cfg->padding, 0);
+	lv_obj_set_style_pad_hor(queue_list, 12, 0);
 	lv_obj_set_style_pad_ver(queue_list, 0, 0);
 	lv_obj_set_scroll_dir(queue_list, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(queue_list, LV_SCROLLBAR_MODE_AUTO);
@@ -1297,9 +1340,12 @@ static void build_queue_page(gui_config_t *cfg) {
 		lv_obj_set_x(row->button, 0);
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row->button, 12, 0);
+		lv_obj_set_style_radius(row->button, 16, 0);
 		lv_obj_set_style_border_width(row->button, 0, 0);
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
+		// Plain rows on the page; the surface shows only under a finger.
+		lv_obj_set_style_bg_opa(row->button, LV_OPA_TRANSP, 0);
+		lv_obj_set_style_bg_opa(row->button, LV_OPA_COVER, LV_STATE_PRESSED);
 		lv_obj_set_style_pad_all(row->button, 8, 0);
 		lv_obj_set_style_pad_column(row->button, 14, 0);
 		lv_obj_set_hidden(row->button, true);
@@ -1317,12 +1363,29 @@ static void build_queue_page(gui_config_t *cfg) {
 		lv_obj_set_size(row->icon, QUEUE_THUMB_SIZE, QUEUE_THUMB_SIZE);
 		lv_image_set_inner_align(row->icon, LV_IMAGE_ALIGN_CENTER);
 
-		row->label = lv_label_create(row->button);
+		// The title over the artist, as every list of tracks has them.
+		lv_obj_t *names = lv_obj_create(row->button);
+		lv_obj_remove_style_all(names);
+		lv_obj_set_flex_grow(names, 1);
+		lv_obj_set_height(names, LV_SIZE_CONTENT);
+		lv_obj_set_flex_flow(names, LV_FLEX_FLOW_COLUMN);
+		lv_obj_set_style_pad_row(names, 2, 0);
+		lv_obj_set_clickable(names, false);
+		lv_obj_set_scrollable(names, false);
+		row->label = lv_label_create(names);
 		lv_label_set_long_mode(row->label, LV_LABEL_LONG_DOT);
-		lv_obj_set_flex_grow(row->label, 1);
-		lv_obj_set_height(row->label, 32);
+		lv_obj_set_width(row->label, lv_pct(100));
+		lv_obj_set_height(row->label, lv_font_get_line_height(&font_ui_24));
 		lv_obj_add_style(row->label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(row->label, &font_ui_24, 0);
+		row->artist = lv_label_create(names);
+		lv_label_set_text(row->artist, "");
+		lv_label_set_long_mode(row->artist, LV_LABEL_LONG_DOT);
+		lv_obj_set_width(row->artist, lv_pct(100));
+		lv_obj_set_height(row->artist, lv_font_get_line_height(&font_ui_20));
+		lv_obj_add_style(row->artist, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(row->artist, &font_ui_20, 0);
+		lv_obj_set_hidden(row->artist, true);
 
 		row->check = lv_image_create(row->button);
 		lv_image_set_src(row->check, &icon_check);
@@ -1646,8 +1709,9 @@ static void build_details_page(gui_config_t *cfg) {
 
 	int content_top = settingsrow_content_top(cfg);
 
+	int footer = navbar_use_shared_mini(details_screen, cfg);
 	lv_obj_t *scroll = lv_obj_create(details_screen);
-	lv_obj_set_size(scroll, cfg->screen_width, cfg->screen_height - content_top);
+	lv_obj_set_size(scroll, cfg->screen_width, cfg->screen_height - content_top - footer);
 	lv_obj_align(scroll, LV_ALIGN_TOP_LEFT, 0, content_top);
 	lv_obj_set_style_bg_opa(scroll, 0, 0);
 	lv_obj_set_style_border_width(scroll, 0, 0);

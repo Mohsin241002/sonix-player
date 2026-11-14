@@ -354,7 +354,7 @@ void ccsettings_init(gui_config_t *cfg) {
 	ccsettings_screen = lv_obj_create(NULL);
 	lv_obj_add_style(ccsettings_screen, &theme_style_screen, 0);
 
-	page = settingsrow_page(ccsettings_screen, cfg, "control_centre");
+	page = settingsrow_playback_page(ccsettings_screen, cfg, "control_centre");
 
 	int width = cfg->screen_width - 2 * cfg->padding;
 

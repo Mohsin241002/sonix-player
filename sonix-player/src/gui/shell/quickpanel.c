@@ -1,4 +1,5 @@
 #include "quickpanel.h"
+#include "src/gui/shell/navbar.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -50,27 +51,30 @@
 #include "src/system/net/wifi.h"
 
 #define PANEL_ANIM_MS 180
+static void volume_sync(void);
 #define PANEL_POLL_MS 700
 
 // Four round quick controls to a line. Four at 88 px plus their gaps is 394,
 // against the roughly 400 px the card leaves inside its padding, so a fifth
 // does not fit however tight the gap gets: the extra controls wrap onto a
 // second line rather than shrinking.
-#define CIRCLE_BUTTON_SIZE 88
-#define CIRCLE_BUTTON_GAP 14
-#define QP_BUTTONS_PER_LINE 4
+#define CIRCLE_BUTTON_SIZE 92 // a tile's height; two tiles to a line
+#define CIRCLE_BUTTON_GAP 8
+#define QP_BUTTONS_PER_LINE 2
 
 // How the sheet divides the screen up: a strip for the close hint at the
 // bottom, small gaps at the top and between the cards, and the rest split
 // evenly between them. The leftover space goes to the cards rather than around
 // them, or on a 720 px panel everything sits high.
 #define CARD_PADDING 20
-#define HINT_STRIP_H 52 // room under the cards for the close line
-#define CARD_TOP_GAP 12 // between the status bar and the first card
-#define CARD_GAP 16	   // between the two cards
-#define CARD_ROW_GAP 12 // between the blocks inside the controls card
+#define HINT_STRIP_H 64 // room under the cards for the close line
+#define CARD_TOP_GAP 4 // between the status bar and the first card
+#define CARD_GAP 8	   // between the two cards
+#define CARD_ROW_GAP 8 // between the blocks inside the controls card
 #define HANDLE_ROOM 24	// added under the slider when the card has a handle
-#define BRIGHT_ROW_H 44
+#define BRIGHT_ROW_H 76
+#define NP_CARD_H 104
+static int tile_w = 224; // set from the screen's width before the tiles are made
 // The dimmest backlight level on the slider: 0 would put the backlight out.
 #define BRIGHTNESS_FLOOR 1
 
@@ -83,6 +87,9 @@
 static lv_obj_t *veil;	// dims the page still showing while the sheet is part-way in
 static lv_obj_t *panel; // the full-screen sheet, parked above the top edge
 static lv_obj_t *brightness_slider;
+static lv_obj_t *volume_row;
+static lv_obj_t *volume_slider;
+static lv_obj_t *volume_value;
 static lv_obj_t *mseb_btn, *eq_btn;
 static lv_obj_t *wifi_btn, *bt_btn;
 static lv_obj_t *fade_btn, *gain_btn;
@@ -221,6 +228,7 @@ static bool press_dragged;
 static lv_obj_t *np_title;
 static lv_obj_t *np_artist;
 static lv_obj_t *np_play_btn;
+static lv_obj_t *np_thumb; // the sleeve on the now-playing card: the mini-player's own picture
 static lv_obj_t *np_play_icon;
 static lv_obj_t *np_repeat_icon;
 
@@ -242,6 +250,18 @@ bool quickpanel_is_open(void) { return panel_open; }
 // ---------------------------------------------------------------------------
 // now-playing state
 // ---------------------------------------------------------------------------
+
+static void volume_sync(void) {
+	if (!volume_slider) {
+		return;
+	}
+	int percent = get_volume_percent();
+	if (lv_slider_get_value(volume_slider) != percent) {
+		lv_slider_set_value(volume_slider, percent, LV_ANIM_OFF);
+	}
+	lv_obj_set_style_bg_color(volume_slider, theme()->accent, LV_PART_INDICATOR);
+	lv_label_set_text_fmt(volume_value, "%d", percent);
+}
 
 static void refresh_repeat_icon(void) {
 	lv_color_t active = theme()->accent;
@@ -279,6 +299,12 @@ static void refresh_repeat_icon(void) {
 static void refresh_now_playing_card(void) {
 	device_state_t state;
 	device_state_get(&state);
+
+	if (np_thumb) {
+		const lv_image_dsc_t *art = navbar_thumb();
+		lv_image_set_src(np_thumb, art);
+		lv_obj_set_hidden(np_thumb, art == NULL);
+	}
 
 	if (state.live) {
 		// A radio: the station on the first line, what it reports on air on the
@@ -389,7 +415,7 @@ static void refresh_now_playing_card(void) {
 	lv_obj_set_style_image_recolor(np_play_icon, theme()->accent, 0);
 	lv_obj_set_style_image_recolor_opa(np_play_icon, LV_OPA_COVER, 0);
 	if (np_play_btn) {
-		lv_obj_set_style_bg_color(np_play_btn, theme()->dark ? lv_color_white() : theme()->surface_pressed, 0);
+		lv_obj_set_style_bg_opa(np_play_btn, LV_OPA_TRANSP, 0); // a bare glyph on the one-line card
 	}
 
 	// On a radio the star is about the station and lives in the radio database:
@@ -533,6 +559,9 @@ static void expand_set(int h) {
 	lv_obj_set_height(controls_card, card_h_base + h);
 	lv_obj_set_height(extra_clip, h);
 	lv_obj_set_style_translate_y(bright_row, h, 0);
+	if (volume_row) {
+		lv_obj_set_style_translate_y(volume_row, h, 0);
+	}
 
 	// In proportion to the stretch: the second block comes in as the card
 	// uncovers it, and the card underneath goes out as it is covered.
@@ -609,6 +638,7 @@ static void panel_prepare(void) {
 		value = max;
 	}
 	lv_slider_set_value(brightness_slider, (int32_t)value, LV_ANIM_OFF);
+	volume_sync();
 	lv_obj_set_style_bg_color(brightness_slider, theme()->accent, LV_PART_INDICATOR);
 	// The sheet is built once at startup, so the knob outline has to be reapplied
 	// for whichever theme is live now; otherwise it keeps the ring (or lack of
@@ -814,6 +844,15 @@ static void panel_drag_cb(lv_event_t *e) {
 // ---------------------------------------------------------------------------
 // controls
 // ---------------------------------------------------------------------------
+
+// The volume, as the keys and the heads-up bar set it: asked for in percent,
+// then read back, because line out and the volume limit both hold it.
+static void volume_changed_cb(lv_event_t *e) {
+	(void)e;
+	set_volume_percent((int)lv_slider_get_value(volume_slider));
+	volume_sync();
+	topbar_refresh_volume(get_volume_percent());
+}
 
 static void brightness_changed_cb(lv_event_t *e) {
 	(void)e;
@@ -1210,6 +1249,21 @@ static void order_apply(void) {
 
 	// How far the card stretches: a line and the gap above it for each line of
 	// the second block, the same pitch as the lines above.
+	// The first block is as tall as the tiles in it, so three lines of tiles
+	// do not leave the room of a fourth.
+	int first_n = at < QP_SLOT_VISIBLE ? at : QP_SLOT_VISIBLE;
+	int first_lines = (first_n + QP_BUTTONS_PER_LINE - 1) / QP_BUTTONS_PER_LINE;
+	if (first_lines < 1) {
+		first_lines = 1;
+	}
+	int first_h = first_lines * CIRCLE_BUTTON_SIZE + (first_lines - 1) * CIRCLE_BUTTON_GAP;
+	if (quick_row) {
+		lv_obj_set_height(quick_row, first_h);
+	}
+	if (extra_clip) {
+		lv_obj_set_y(extra_clip, first_h);
+	}
+	card_h_rest = first_h + 2 * (CARD_ROW_GAP + BRIGHT_ROW_H);
 	int extra = at > QP_SLOT_VISIBLE ? at - QP_SLOT_VISIBLE : 0;
 	int lines = (extra + QP_BUTTONS_PER_LINE - 1) / QP_BUTTONS_PER_LINE;
 	expand_full = lines * (CIRCLE_BUTTON_SIZE + CIRCLE_BUTTON_GAP);
@@ -1221,7 +1275,6 @@ static void order_apply(void) {
 		int room = expand_full ? HANDLE_ROOM : 0;
 		card_h_base = card_h_rest + room;
 		lv_obj_set_y(np_card, card_top + card_h_base + CARD_GAP);
-		lv_obj_set_height(np_card, card_h_rest - room);
 		lv_obj_set_hidden(expand_handle, expand_full == 0);
 	}
 	expand_to(0, false);
@@ -1410,38 +1463,92 @@ static void circle_guard_cb(lv_event_t *e) {
 // the sheet, so a drag that starts on a circle moves the sheet or the card like
 // a drag anywhere else.
 static lv_obj_t *make_circle_button(lv_obj_t *parent, const lv_image_dsc_t *glyph) {
+	// A tile, as the design draws the control centre: the glyph, then the
+	// control's name over its state, on a 92 px surface two to a line.
 	lv_obj_t *btn = lv_btn_create(parent);
 	lv_obj_set_event_bubble(btn, true);
 	lv_obj_add_event_cb(btn, circle_guard_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(btn, circle_guard_cb, LV_EVENT_LONG_PRESSED, NULL);
-	lv_obj_set_size(btn, CIRCLE_BUTTON_SIZE, CIRCLE_BUTTON_SIZE);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-	lv_obj_add_style(btn, &theme_style_switch, 0); // neutral circle that follows the theme
+	lv_obj_set_size(btn, tile_w, CIRCLE_BUTTON_SIZE);
+	lv_obj_add_style(btn, &theme_style_card, 0);
+	lv_obj_set_style_radius(btn, 16, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
+	lv_obj_set_style_pad_hor(btn, 16, 0);
+	lv_obj_set_style_pad_column(btn, 12, 0);
+	lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 	lv_obj_t *icon = lv_image_create(btn);
 	lv_image_set_src(icon, glyph);
+	lv_obj_set_size(icon, 32, 32);
+	lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CONTAIN);
 	lv_obj_add_style(icon, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
-	lv_obj_center(icon);
+
+	lv_obj_t *col = lv_obj_create(btn);
+	lv_obj_remove_style_all(col);
+	lv_obj_set_flex_grow(col, 1);
+	lv_obj_set_height(col, LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_style_pad_row(col, 2, 0);
+	lv_obj_set_clickable(col, false);
+	lv_obj_set_scrollable(col, false);
+
+	lv_obj_t *name = lv_label_create(col);
+	lv_label_set_text(name, "");
+	lv_obj_add_style(name, &theme_style_text, 0);
+	lv_obj_set_style_text_font(name, &font_ui_20, 0);
+	lv_obj_set_width(name, lv_pct(100));
+	lv_obj_set_height(name, lv_font_get_line_height(&font_ui_20));
+	lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+
+	lv_obj_t *state = lv_label_create(col);
+	lv_label_set_text(state, "");
+	lv_obj_add_style(state, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(state, &font_ui_16, 0);
+	lv_obj_set_width(state, lv_pct(100));
+	lv_obj_set_height(state, lv_font_get_line_height(&font_ui_16));
+	lv_label_set_long_mode(state, LV_LABEL_LONG_DOT);
 
 	return btn;
 }
 
-// Paints a quick button for its state: accent fill with a white glyph while on,
-// the neutral circle while off.
+// The two lines of a tile.
+static lv_obj_t *tile_label(lv_obj_t *btn, int which) {
+	lv_obj_t *col = btn ? lv_obj_get_child(btn, 1) : NULL;
+	return col ? lv_obj_get_child(col, which) : NULL;
+}
+
+static void tile_set_state_text(lv_obj_t *btn, const char *text) {
+	lv_obj_t *state = tile_label(btn, 1);
+	if (state && strcmp(lv_label_get_text(state), text) != 0) {
+		lv_label_set_text(state, text);
+	}
+}
+
+// Paints a tile for its state: the accent with dark ink while on, the plain
+// surface while off, and the word for it on the second line.
 static void circle_button_set_on(lv_obj_t *btn, bool on) {
 	if (!btn) {
 		return;
 	}
 	lv_obj_t *icon = lv_obj_get_child(btn, 0);
+	lv_obj_t *name = tile_label(btn, 0);
+	lv_obj_t *state = tile_label(btn, 1);
 
 	if (on) {
+		lv_color_t ink = theme_on_accent();
 		lv_obj_set_style_bg_color(btn, theme()->accent, 0);
 		lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
 		if (icon) {
-			lv_obj_set_style_image_recolor(icon, lv_color_white(), 0);
+			lv_obj_set_style_image_recolor(icon, ink, 0);
+		}
+		if (name) {
+			lv_obj_set_style_text_color(name, ink, 0);
+		}
+		if (state) {
+			lv_obj_set_style_text_color(state, ink, 0);
 		}
 	} else {
 		lv_obj_remove_local_style_prop(btn, LV_STYLE_BG_COLOR, 0);
@@ -1449,7 +1556,14 @@ static void circle_button_set_on(lv_obj_t *btn, bool on) {
 		if (icon) {
 			lv_obj_remove_local_style_prop(icon, LV_STYLE_IMAGE_RECOLOR, 0);
 		}
+		if (name) {
+			lv_obj_remove_local_style_prop(name, LV_STYLE_TEXT_COLOR, 0);
+		}
+		if (state) {
+			lv_obj_remove_local_style_prop(state, LV_STYLE_TEXT_COLOR, 0);
+		}
 	}
+	tile_set_state_text(btn, tr(on ? "on" : "peq_off"));
 }
 
 // Whether that timer will actually stop the music: the switch on AND a length
@@ -1481,6 +1595,8 @@ static void refresh_audio_buttons(void) {
 		}
 	}
 	circle_button_set_on(gain_btn, high);
+	// Gain is never off: the tile says which of the two it is, as the design has it.
+	tile_set_state_text(gain_btn, tr(high ? "settings_val_high" : "settings_val_low"));
 	circle_button_set_on(lineout_btn, lineout_is_active());
 
 	// The drawing changes with the state as well as the fill: the two halves
@@ -1924,7 +2040,10 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_style(panel, &theme_style_screen, 0);
 	lv_obj_set_style_radius(panel, 0, 0);
 	lv_obj_set_style_border_width(panel, 0, 0);
-	lv_obj_set_style_pad_hor(panel, cfg->padding, 0);
+	lv_obj_set_style_pad_hor(panel, 12, 0);
+	if (theme()->dark) {
+		lv_obj_set_style_bg_color(panel, lv_color_make(5, 5, 6), 0); // a step under the page's black
+	}
 	lv_obj_set_style_pad_top(panel, PANEL_PAD_TOP(cfg), 0);
 	lv_obj_set_style_pad_bottom(panel, PANEL_PAD_BOTTOM, 0);
 	lv_obj_set_style_pad_gap(panel, 14, 0);
@@ -1945,8 +2064,10 @@ void quickpanel_init(gui_config_t *cfg) {
 	if (top_inset < 0) {
 		top_inset = 0; // a bar shorter than the padding leaves nothing to clear
 	}
-	int card_w = cfg->screen_width - 2 * cfg->padding;
-	int card_h = (content_h - top_inset - HINT_STRIP_H - CARD_GAP) / 2;
+	int card_w = cfg->screen_width - 2 * 12;
+	tile_w = (card_w - CIRCLE_BUTTON_GAP) / 2;
+	(void)content_h;
+	int card_h = 4 * CIRCLE_BUTTON_SIZE + 3 * CIRCLE_BUTTON_GAP + 2 * (CARD_ROW_GAP + BRIGHT_ROW_H);
 	if (card_h < 160) {
 		card_h = 160; // floor for panels shorter than any shipped screen
 	}
@@ -1956,6 +2077,9 @@ void quickpanel_init(gui_config_t *cfg) {
 	card_h_rest = card_h;
 	card_h_base = card_h;
 	card_top = top_inset;
+	lv_obj_set_style_bg_opa(controls_card, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_pad_all(controls_card, 0, 0);
+	lv_obj_set_style_radius(controls_card, 0, 0);
 	lv_obj_set_flex_flow(controls_card, LV_FLEX_FLOW_COLUMN);
 	// Brightness under the buttons; the buttons take the height above it and
 	// their rows are centred in it, so a single row of four sits midway between
@@ -1963,7 +2087,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	// card, so the slider stays where it is while the card stretches.
 	lv_obj_set_flex_align(controls_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_gap(controls_card, CARD_ROW_GAP, 0);
-	int row_h = card_h - 2 * CARD_PADDING - BRIGHT_ROW_H - CARD_ROW_GAP;
+	int row_h = card_h - 2 * (BRIGHT_ROW_H + CARD_ROW_GAP);
 
 	lv_obj_t *row = lv_obj_create(controls_card);
 	quick_row = row;
@@ -1978,7 +2102,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_event_bubble(row, true);
 	lv_obj_set_style_pad_row(row, CIRCLE_BUTTON_GAP, 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
 	// The radios: a tap switches them, a hold opens their page, the same contract
 	// MSEB and the equalizer use.
@@ -2064,16 +2188,59 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(gapless_btn, gapless_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(gapless_btn, gapless_page_cb, LV_EVENT_LONG_PRESSED, NULL);
 
+	// Volume over brightness, each on its own 76 px surface.
+	volume_row = lv_obj_create(controls_card);
+	lv_obj_set_size(volume_row, lv_pct(100), BRIGHT_ROW_H);
+	lv_obj_add_style(volume_row, &theme_style_card, 0);
+	lv_obj_set_style_radius(volume_row, 20, 0);
+	lv_obj_set_style_border_width(volume_row, 0, 0);
+	lv_obj_set_style_pad_all(volume_row, 0, 0);
+	lv_obj_set_style_pad_left(volume_row, 20, 0);
+	lv_obj_set_style_pad_right(volume_row, 16, 0);
+	lv_obj_set_style_pad_gap(volume_row, 18, 0);
+	lv_obj_set_scrollable(volume_row, false);
+	lv_obj_set_event_bubble(volume_row, true);
+	lv_obj_set_flex_flow(volume_row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(volume_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_t *speaker = lv_image_create(volume_row);
+	lv_image_set_src(speaker, &icon_volume_high);
+	lv_obj_set_size(speaker, 30, 30);
+	lv_image_set_inner_align(speaker, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_add_style(speaker, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(speaker, LV_OPA_COVER, 0);
+	volume_slider = lv_slider_create(volume_row);
+	lv_obj_set_height(volume_slider, 10);
+	lv_obj_set_flex_grow(volume_slider, 1);
+	lv_slider_set_range(volume_slider, 0, 100);
+	lv_obj_set_style_radius(volume_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+	lv_obj_set_style_bg_color(volume_slider, theme()->text_secondary, LV_PART_MAIN);
+	lv_obj_set_style_bg_opa(volume_slider, LV_OPA_40, LV_PART_MAIN);
+	lv_obj_set_style_radius(volume_slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+	lv_obj_set_style_bg_color(volume_slider, theme()->accent, LV_PART_INDICATOR);
+	lv_obj_set_style_radius(volume_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+	lv_obj_set_style_bg_color(volume_slider, theme()->text_primary, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(volume_slider, 9, LV_PART_KNOB);
+	lv_obj_set_ext_click_area(volume_slider, 18);
+	lv_obj_add_event_cb(volume_slider, volume_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+	volume_value = lv_label_create(volume_row);
+	lv_label_set_text(volume_value, "0");
+	lv_obj_add_style(volume_value, &theme_style_text, 0);
+	lv_obj_set_style_text_font(volume_value, &font_ui_20, 0);
+	lv_obj_set_width(volume_value, 40);
+	lv_obj_set_style_text_align(volume_value, LV_TEXT_ALIGN_RIGHT, 0);
+
 	bright_row = lv_obj_create(controls_card);
 	lv_obj_set_size(bright_row, lv_pct(100), BRIGHT_ROW_H);
-	lv_obj_set_style_bg_opa(bright_row, 0, 0);
+	lv_obj_add_style(bright_row, &theme_style_card, 0);
+	lv_obj_set_style_radius(bright_row, 20, 0);
 	lv_obj_set_style_border_width(bright_row, 0, 0);
 	lv_obj_set_style_pad_all(bright_row, 0, 0);
 	// The knob is 26 px across and centred on the value, so at full scale half of
 	// it falls past the end of the track; the row clips its children, which would
 	// slice the knob down the middle. Keeping the track 13 px short of the row's
 	// right edge gives it room.
-	lv_obj_set_style_pad_right(bright_row, 13, 0);
+	lv_obj_set_style_pad_left(bright_row, 20, 0);
+	lv_obj_set_style_pad_right(bright_row, 28, 0);
 	lv_obj_set_style_pad_gap(bright_row, 18, 0);
 	lv_obj_set_scrollable(bright_row, false);
 	lv_obj_set_event_bubble(bright_row, true);
@@ -2095,10 +2262,9 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
 	lv_obj_set_style_bg_color(brightness_slider, theme()->accent, LV_PART_INDICATOR);
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-	lv_obj_set_style_bg_color(brightness_slider, lv_color_white(), LV_PART_KNOB);
-	theme_apply_slider_knob(brightness_slider);
-	lv_obj_set_style_pad_all(brightness_slider, 8, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(brightness_slider, 8, LV_PART_KNOB);
+	lv_obj_set_style_bg_color(brightness_slider, theme()->text_primary, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(brightness_slider, 9, LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(brightness_slider, 0, LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(brightness_slider, LV_OPA_30, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(brightness_slider, lv_color_black(), LV_PART_KNOB);
 	lv_obj_set_ext_click_area(brightness_slider, 18);
@@ -2116,7 +2282,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(extra_clip);
 	lv_obj_set_ignore_layout(extra_clip, true);
 	lv_obj_set_size(extra_clip, lv_pct(100), 0);
-	lv_obj_set_pos(extra_clip, 0, (row_h + first_h) / 2); // the grid's lines are centred in the row
+	(void)first_h;
+	lv_obj_set_pos(extra_clip, 0, row_h); // order_apply() settles it under the last line of tiles
 	lv_obj_set_scrollable(extra_clip, false);
 	lv_obj_set_event_bubble(extra_clip, true);
 	lv_obj_set_hidden(extra_clip, true);
@@ -2131,7 +2298,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_scrollable(extra_row, false);
 	lv_obj_set_event_bubble(extra_row, true);
 	lv_obj_set_flex_flow(extra_row, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_flex_align(extra_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_flex_align(extra_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
 	// The handle: a short line in the band under the slider -- the room the
 	// card gains for it and the card's bottom padding -- which travels down
@@ -2141,8 +2308,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	// it is the same drag as anywhere else.
 	expand_handle = lv_obj_create(controls_card);
 	lv_obj_set_ignore_layout(expand_handle, true);
-	lv_obj_set_size(expand_handle, 160, HANDLE_ROOM + CARD_PADDING);
-	lv_obj_align(expand_handle, LV_ALIGN_BOTTOM_MID, 0, CARD_PADDING);
+	lv_obj_set_size(expand_handle, 160, HANDLE_ROOM);
+	lv_obj_align(expand_handle, LV_ALIGN_BOTTOM_MID, 0, 0);
 	lv_obj_set_style_bg_opa(expand_handle, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(expand_handle, 0, 0);
 	lv_obj_set_style_shadow_width(expand_handle, 0, 0);
@@ -2162,34 +2329,57 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_clickable(expand_pill, false);
 
 	// --- Second card: what is playing, and its transport. ---
-	np_card = make_card(panel, card_w, card_h, top_inset + card_h + CARD_GAP);
-	lv_obj_set_flex_flow(np_card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(np_card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(np_card, 6, 0);
+	// --- Second card: what is playing, on one line -- the sleeve, the names,
+	// play and next. Shuffle, previous and the star live in the player.
+	np_card = make_card(panel, card_w, NP_CARD_H, top_inset + card_h + CARD_GAP);
+	lv_obj_set_style_pad_all(np_card, 0, 0);
+	lv_obj_set_style_pad_left(np_card, 16, 0);
+	lv_obj_set_style_pad_right(np_card, 4, 0);
+	lv_obj_set_flex_flow(np_card, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(np_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_style_pad_column(np_card, 14, 0);
 
-	// Title and artist are centred and scroll when too long, the same treatment
-	// as the player's now-playing lines. Each is exactly one line of its own
-	// font high: a scrolling label shorter than its text scrolls it upwards
-	// instead of sideways, which is what a fixed height did to the artist as
-	// soon as the text size was Large.
-	np_title = lv_label_create(np_card);
+	lv_obj_t *np_art = lv_obj_create(np_card);
+	lv_obj_remove_style_all(np_art);
+	lv_obj_add_style(np_art, &theme_style_card_pressed, 0);
+	lv_obj_set_style_bg_opa(np_art, LV_OPA_COVER, 0);
+	lv_obj_set_size(np_art, 72, 72);
+	lv_obj_set_style_radius(np_art, 10, 0);
+	lv_obj_set_clickable(np_art, false);
+	lv_obj_set_scrollable(np_art, false);
+	// Rounded by the image itself rather than clip_corner on the frame, which
+	// would render the frame offscreen on every frame of the panel's slide.
+	np_thumb = lv_image_create(np_art);
+	lv_obj_set_size(np_thumb, 72, 72);
+	lv_obj_set_style_radius(np_thumb, 10, 0);
+	lv_image_set_inner_align(np_thumb, LV_IMAGE_ALIGN_STRETCH);
+	lv_obj_set_hidden(np_thumb, true);
+
+	lv_obj_t *np_text = lv_obj_create(np_card);
+	lv_obj_remove_style_all(np_text);
+	lv_obj_set_flex_grow(np_text, 1);
+	lv_obj_set_height(np_text, LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(np_text, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_style_pad_row(np_text, 3, 0);
+	lv_obj_set_clickable(np_text, false);
+	lv_obj_set_scrollable(np_text, false);
+
+	np_title = lv_label_create(np_text);
 	lv_obj_set_width(np_title, lv_pct(100));
-	lv_obj_set_height(np_title, lv_font_get_line_height(&font_ui_26));
+	lv_obj_set_height(np_title, lv_font_get_line_height(&font_ui_24));
 	lv_obj_add_style(np_title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(np_title, &font_ui_26, 0);
-	lv_obj_set_style_text_align(np_title, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_set_style_text_font(np_title, &font_ui_24, 0);
 	scrolltext_apply(np_title);
 
-	np_artist = lv_label_create(np_card);
+	np_artist = lv_label_create(np_text);
 	lv_obj_set_width(np_artist, lv_pct(100));
-	lv_obj_set_height(np_artist, lv_font_get_line_height(&font_ui_22));
+	lv_obj_set_height(np_artist, lv_font_get_line_height(&font_ui_20));
 	lv_obj_add_style(np_artist, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(np_artist, &font_ui_22, 0);
-	lv_obj_set_style_text_align(np_artist, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_set_style_text_font(np_artist, &font_ui_20, 0);
 	scrolltext_apply(np_artist);
 
 	lv_obj_t *transport = lv_obj_create(np_card);
-	lv_obj_set_size(transport, lv_pct(100), 96);
+	lv_obj_set_size(transport, LV_SIZE_CONTENT, 72);
 	lv_obj_set_style_bg_opa(transport, 0, 0);
 	lv_obj_set_style_border_width(transport, 0, 0);
 	lv_obj_set_style_pad_all(transport, 0, 0);
@@ -2197,8 +2387,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_event_bubble(transport, true);
 	lv_obj_set_flex_flow(transport, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(transport, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(transport, 4, 0);
-	lv_obj_set_style_pad_top(transport, 10, 0);
+	lv_obj_set_style_pad_column(transport, 0, 0);
 
 	// Repeat/shuffle pinned left, the star pinned right, transport centred
 	// between them: the player's arrangement.
@@ -2221,7 +2410,7 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	// The play disc keeps the neutral circle colour the other round controls use;
 	// the white disc belongs over artwork, not on a card that follows the theme.
-	lv_obj_t *play_btn = make_flat_button(transport, 84, play_cb);
+	lv_obj_t *play_btn = make_flat_button(transport, 72, play_cb);
 	lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_add_style(play_btn, &theme_style_switch, 0);
 	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
@@ -2230,7 +2419,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_style(np_play_icon, &theme_style_icon, 0);
 	lv_obj_center(np_play_icon);
 
-	lv_obj_t *next_btn = make_flat_button(transport, 76, next_cb);
+	lv_obj_t *next_btn = make_flat_button(transport, 72, next_cb);
 	np_next_btn = next_btn;
 	lv_obj_t *next_icon = lv_image_create(next_btn);
 	// The look of the three while a station connects; see the refresh.
@@ -2254,9 +2443,29 @@ void quickpanel_init(gui_config_t *cfg) {
 	// chevron, because it reads as "drag me" instead of "press me" and dragging
 	// is what actually closes the panel. The line is not clickable: a finger
 	// landing on it talks to the surface underneath, where the gesture lives.
+	// The three the one-line card has no room for: kept, so everything that
+	// repaints them still has them, and out of sight.
+	lv_obj_t *attic = lv_obj_create(np_card);
+	lv_obj_remove_style_all(attic);
+	lv_obj_set_ignore_layout(attic, true);
+	lv_obj_set_size(attic, 0, 0);
+	lv_obj_set_hidden(attic, true);
+	lv_obj_set_parent(repeat_btn, attic);
+	lv_obj_set_parent(prev_btn, attic);
+	lv_obj_set_parent(star_btn, attic);
+
+	// Every tile's name, from the same tags the Control centre settings list
+	// them by.
+	for (int i = 0; i < QP_BTN_COUNT; i++) {
+		lv_obj_t *name = tile_label(button_widget((quickpanel_button_t)i), 0);
+		if (name) {
+			lv_label_set_text(name, tr(quickpanel_button_tag((quickpanel_button_t)i)));
+		}
+	}
+
 	lv_obj_t *close_btn = lv_obj_create(panel);
 	lv_obj_set_ignore_layout(close_btn, true);
-	lv_obj_set_size(close_btn, 140, HINT_STRIP_H - 8);
+	lv_obj_set_size(close_btn, lv_pct(100), HINT_STRIP_H - 8);
 	// Flush with the bottom of the sheet's content box, which centres the line in
 	// the band between the last card and the screen edge: the band is
 	// HINT_STRIP_H below the card plus PANEL_PAD_BOTTOM under the content box,
@@ -2274,7 +2483,15 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_image_set_src(hint, &icon_control_center_line);
 	lv_obj_add_style(hint, &theme_style_icon, 0);
 	lv_obj_set_style_image_opa(hint, LV_OPA_60, 0);
-	lv_obj_center(hint);
+	lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, -10);
+	lv_obj_t *hint_text = lv_label_create(close_btn);
+	lv_label_set_text(hint_text, tr("cc_hint"));
+	lv_obj_add_style(hint_text, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(hint_text, &font_ui_16, 0);
+	lv_obj_set_width(hint_text, lv_pct(100));
+	lv_obj_set_style_text_align(hint_text, LV_TEXT_ALIGN_CENTER, 0);
+	lv_label_set_long_mode(hint_text, LV_LABEL_LONG_DOT);
+	lv_obj_align(hint_text, LV_ALIGN_BOTTOM_MID, 0, -6);
 
 	// The controls card in front of the now-playing one, which it covers when
 	// stretched.

@@ -14,6 +14,9 @@
 // the same place.
 lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *text);
 
+// Moves a heading to the left margin, for the tab pages that have no chevron.
+void settingsrow_title_root(lv_obj_t *title, gui_config_t *cfg);
+
 // How far down a page's content has to start to clear the heading and the
 // corner buttons.
 int settingsrow_content_top(gui_config_t *cfg);
@@ -21,6 +24,7 @@ int settingsrow_content_top(gui_config_t *cfg);
 // Builds the page scaffolding (title + column container) and returns the
 // container the rows go into.
 lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *title);
+lv_obj_t *settingsrow_playback_page(lv_obj_t *screen, gui_config_t *cfg, const char *title);
 
 // Narrows a heading to clear `buttons` controls in the page's top right corner.
 // The heading is built reserving room for one; a page with more has to say so,
@@ -31,6 +35,18 @@ void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int butt
 // The heading a settingsrow_page() built, for a page whose title changes after
 // it is built (Language names itself in two languages and one of them moves).
 lv_obj_t *settingsrow_page_title(lv_obj_t *screen);
+
+// Makes a row a page built for itself part of its container's groups: rows that
+// follow one another become one surface, as the rows this file builds do.
+void settingsrow_group(lv_obj_t *parent, lv_obj_t *row);
+
+// An uppercase section label over the group of rows that follows it, and a
+// plain 8 px break between two groups that have no label.
+lv_obj_t *settingsrow_section(lv_obj_t *parent, const char *text);
+void settingsrow_gap(lv_obj_t *parent);
+
+// Sets a label to text in the capitals section labels use (ASCII letters only).
+void settingsrow_upper_text(lv_obj_t *label, const char *text);
 
 // Adds a row: name on the left, current value on the right. `value_out` may be
 // NULL for a row that just opens something.
@@ -102,6 +118,30 @@ lv_obj_t *settingsrow_toggle_pills(lv_obj_t *parent, const char *title, lv_event
 lv_obj_t *settingsrow_pills(lv_obj_t *parent, const char *title, lv_obj_t **pills_out);
 
 // One pill. `value` reaches the callback as its user data.
+// The track a row of pills sits in: the design's segmented control.
+lv_obj_t *settingsrow_segmented(lv_obj_t *parent);
+
+// The design's stepper row: the name (and a dim line under it when `subtitle`
+// is given) on the left, then a round minus, the value, and a round plus.
+// `cb` gets -1 or +1 as its user data. Returns the row.
+lv_obj_t *settingsrow_stepper(lv_obj_t *parent, const char *name, const char *subtitle, lv_obj_t **value_out,
+							  lv_event_cb_t cb);
+
+// Puts a short dim line under a toggle row's name (the design's subtitle),
+// growing the row to fit. Returns the line, so a page can change it later.
+lv_obj_t *settingsrow_subtitle(lv_obj_t *row, const char *text);
+
+// The design's empty state: a 128 px disc holding `glyph` (drawn at about
+// 52 px, in the dim ink or the accent), a semibold line and a dim paragraph
+// under it, centred in the space left on the page. Any of the texts may be
+// NULL. The parts come back through the out pointers (each may be NULL).
+lv_obj_t *settingsrow_empty(lv_obj_t *parent, const lv_image_dsc_t *glyph, bool accent, const char *title,
+							const char *body, lv_obj_t **title_out, lv_obj_t **body_out);
+
+// A full-width quiet pill button (the design's .btn.q): 72 px, raised surface,
+// the text centred. Returns the button; its label is child 0.
+lv_obj_t *settingsrow_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb, void *user_data);
+
 lv_obj_t *settingsrow_pill(lv_obj_t *parent, const char *text, int value, lv_event_cb_t cb);
 
 // The same pill with `text` written on it as it stands, for a label that is a

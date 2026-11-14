@@ -196,7 +196,7 @@ static void build_panel(gui_config_t *cfg) {
 	panel_title = lv_label_create(panel);
 	lv_label_set_text(panel_title, "Lingua/Language"); // replaced by refresh_titles()
 	lv_obj_add_style(panel_title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(panel_title, &font_ui_32, 0);
+	lv_obj_set_style_text_font(panel_title, &font_ui_32_bold, 0);
 
 	// The list takes whatever is left between the heading and the button, and
 	// scrolls inside it. Sized to its content instead, five languages already
@@ -267,7 +267,7 @@ void language_init(gui_config_t *cfg) {
 		entry_count = i + 1;
 	}
 
-	lv_obj_t *container = settingsrow_page(language_screen, cfg, "language");
+	lv_obj_t *container = settingsrow_playback_page(language_screen, cfg, "language");
 	page_title = settingsrow_page_title(language_screen);
 	for (int i = 0; i < entry_count; i++) {
 		entries[i].page_check = make_row(container, entries[i].label, i);

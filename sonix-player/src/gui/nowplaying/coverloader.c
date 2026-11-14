@@ -78,6 +78,13 @@ static struct {
 	bool pending;
 } prefetch_job;
 
+#define WARM_MAX 24
+static struct {
+	char path[512];
+	int size;
+} warm_queue[WARM_MAX];
+static int warm_count;
+
 static dual_job_t player_job;
 static dual_job_t saver_job;
 
@@ -195,7 +202,7 @@ static void *worker(void *arg) {
 
 		while (next_pending() < 0 && !(id_on_worker && player_id_job.pending && !player_id_job.running) &&
 			   !(player_job.pending && !player_job.running) && !(saver_job.pending && !saver_job.running) &&
-			   !prefetch_job.pending) {
+			   !prefetch_job.pending && warm_count == 0) {
 			pthread_cond_wait(&wakeup, &lock);
 		}
 
@@ -215,6 +222,20 @@ static void *worker(void *arg) {
 		}
 
 		int index = next_pending();
+		if (index < 0 && warm_count > 0) {
+			// Rows just past the screen: into the disk cache, nothing kept.
+			char path[sizeof(warm_queue[0].path)];
+			int size = warm_queue[0].size;
+			memcpy(path, warm_queue[0].path, sizeof(path));
+			memmove(&warm_queue[0], &warm_queue[1], (size_t)(warm_count - 1) * sizeof(warm_queue[0]));
+			warm_count--;
+			pthread_mutex_unlock(&lock);
+			cover_image_t image;
+			if (cover_thumb_load(path, false, size, &image)) {
+				cover_free(&image);
+			}
+			continue;
+		}
 		if (index < 0 && saver_job.pending && !saver_job.running) {
 			// It is a picture for a screen that is off, and nothing on screen is
 			// waiting for it.
@@ -382,6 +403,34 @@ void coverloader_request_shared(int slot_index, const char *path, int size, int 
 	slot->pending = true;
 
 	pthread_cond_signal(&wakeup);
+	pthread_mutex_unlock(&lock);
+}
+
+void coverloader_warm(const char *path, int size) {
+	if (!path || !path[0] || size <= 0) {
+		return;
+	}
+	pthread_mutex_lock(&lock);
+	for (int i = 0; i < warm_count; i++) {
+		if (warm_queue[i].size == size && strcmp(warm_queue[i].path, path) == 0) {
+			pthread_mutex_unlock(&lock);
+			return;
+		}
+	}
+	if (warm_count == WARM_MAX) {
+		memmove(&warm_queue[0], &warm_queue[1], (size_t)(WARM_MAX - 1) * sizeof(warm_queue[0]));
+		warm_count--;
+	}
+	snprintf(warm_queue[warm_count].path, sizeof(warm_queue[0].path), "%s", path);
+	warm_queue[warm_count].size = size;
+	warm_count++;
+	pthread_cond_signal(&wakeup);
+	pthread_mutex_unlock(&lock);
+}
+
+void coverloader_warm_clear(void) {
+	pthread_mutex_lock(&lock);
+	warm_count = 0;
 	pthread_mutex_unlock(&lock);
 }
 

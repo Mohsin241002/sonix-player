@@ -26,6 +26,11 @@ void popover_init(void);
 // Opens the menu near `anchor` with `count` items (at most 7 are shown).
 void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count);
 
+// A header for the next popover_show only: the item the menu is about, as the
+// design's track sheet has it -- a 60 px cover (NULL for none), the title in
+// semibold, a line under it, and a close button. Strings are copied.
+void popover_set_header(const void *cover_src, const char *title, const char *subtitle);
+
 // Closes it (the veil tap and every item do this on their own).
 void popover_close(void);
 

@@ -169,7 +169,7 @@ static void screen_unloaded_cb(lv_event_t *e) {
 }
 
 void devoptions_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(devoptions_screen, cfg, "developer_options");
+	lv_obj_t *container = settingsrow_playback_page(devoptions_screen, cfg, "developer_options");
 
 	settingsrow_toggle(container, "devoptions_adb", &adb_switch, adb_toggled_cb);
 

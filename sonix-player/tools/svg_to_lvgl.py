@@ -155,6 +155,19 @@ ICONS = [
     ("list-queue.svg", "list_queue", 34),
     ("list-x.svg", "list_x", 34),
     ("star-x.svg", "star_x", 34),
+    # The tab bar along the foot of the top-level pages.
+    ("tab-home.svg", "tab_home", 30),
+    ("tab-library.svg", "tab_library", 30),
+    ("tab-search.svg", "tab_search", 30),
+    ("tab-books.svg", "tab_books", 30),
+    ("tab-more.svg", "tab_more", 30),
+    # Home's corner button that opens the control centre.
+    ("sliders.svg", "sliders", 34),
+    # The action row under the player: lyrics, queue, sound.
+    ("lyrics-lines.svg", "lyrics_lines", 30),
+    ("sliders.svg", "sliders_small", 30),
+    ("list-queue.svg", "queue_small", 30),
+    ("headphones.svg", "output_small", 30),
     ("search.svg", "search", 34),
     ("wifi.svg", "wifi", 46),
     ("bluetooth.svg", "bluetooth", 46),
@@ -385,12 +398,12 @@ ICONS = [
     # Main and section menu icons use the same monochrome 32 px glyphs as
     # the rest of the interface, with their existing C names kept stable.
     ("music-2.svg", "menu_music", 32),
-    ("list-music.svg", "menu_all", 32),
+    ("music-2.svg", "menu_all", 32),
     ("album.svg", "menu_album", 32),
     ("artist.svg", "menu_artist", 32),
     ("artist-album.svg", "menu_album_artist", 32),
     ("genre.svg", "menu_genre", 32),
-    ("year-arrow-down.svg", "menu_year", 32),
+    ("calendar.svg", "menu_year", 32),
     ("star.svg", "menu_favourites", 32),
     ("history.svg", "menu_most_played", 32),
     ("folder-open.svg", "menu_explorer", 32),
@@ -416,10 +429,17 @@ ICONS = [
     ("files-gamepad.svg", "menu_gearboy", 32),
     ("files-book.svg", "menu_books", 32),
     ("folder-open.svg", "menu_file_explorer", 32),
-    ("audio-waveform.svg", "menu_metronome", 32),
+    ("metronome.svg", "menu_metronome", 32),
     # The heart that jumps out when the coffee QR code is closed. 160 px
     # because the animation grows it to 1:1 and no further.
     ("heart.svg", "heart", 160),
+    # From the Signal design's own set: rows and tiles that had no glyph or
+    # borrowed another's.
+    ("info.svg", "info", 34),
+    ("play-next.svg", "play_next", 34),
+    ("pencil.svg", "rename", 34),
+    ("copy.svg", "copy", 34),
+    ("bird.svg", "menu_flappy_glyph", 32),
 ]
 
 COLOR_ICONS = [

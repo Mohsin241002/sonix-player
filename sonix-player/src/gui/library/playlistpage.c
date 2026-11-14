@@ -1,4 +1,5 @@
 #include "playlistpage.h"
+#include "src/gui/shell/navbar.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -1368,8 +1369,9 @@ void playlistpage_init(gui_config_t *cfg) {
 
 	int content_top = settingsrow_content_top(cfg);
 
+	int footer = navbar_attach_mini(playlistpage_screen, cfg);
 	list = lv_obj_create(playlistpage_screen);
-	lv_obj_set_size(list, cfg->screen_width, cfg->screen_height - content_top);
+	lv_obj_set_size(list, cfg->screen_width, cfg->screen_height - content_top - footer);
 	lv_obj_align(list, LV_ALIGN_TOP_LEFT, 0, content_top);
 	lv_obj_set_style_bg_opa(list, 0, 0);
 	lv_obj_set_style_border_width(list, 0, 0);

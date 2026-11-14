@@ -27,7 +27,8 @@
 // takes 90; the podcasts on the card take 91..102 for their twelve rows, 103
 // for the cover at the head of one of them and 104..107 for the episodes being
 // listened to -- so the pools never trample each other's requests.
-#define COVERLOADER_SLOTS 108
+// 108..110 are the three records of the home screen's "Jump back in" row.
+#define COVERLOADER_SLOTS 111
 #define COVERLOADER_SEARCH_BASE 36
 #define COVERLOADER_SEARCH_COUNT 24
 #define COVERLOADER_AUDIOBOOKS_BASE 60
@@ -56,6 +57,16 @@ void coverloader_request(int slot, const char *path, int size);
 // table of covers serves it, and is filled by it. What an album's head asks
 // with.
 void coverloader_request_shared(int slot, const char *path, int size, int player_w, int player_h);
+
+// Fills the disk cache for `path` at `size` and keeps nothing: what a list
+// asks for the rows just past the screen once its visible ones are done, so
+// that scrolling on finds them cached. Below every slot request; the queue is
+// short and the oldest wish falls off when it is full. Already-queued paths
+// are not added twice.
+void coverloader_warm(const char *path, int size);
+
+// Drops every warm wish still waiting: the list they were for has gone.
+void coverloader_warm_clear(void);
 
 // Forgets the slot: anything pending is abandoned and anything already decoded
 // for it is freed.

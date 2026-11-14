@@ -32,6 +32,9 @@ static lv_obj_t *bt_switch;
 static lv_obj_t *status_label;
 static lv_obj_t *paired_label;
 static lv_obj_t *paired_list;
+static lv_obj_t *connected_list;
+static lv_obj_t *connected_label;
+static lv_obj_t *pair_btn;
 static lv_obj_t *found_label;
 static lv_obj_t *found_list;
 static lv_obj_t *scan_btn;
@@ -440,8 +443,7 @@ static void add_row(lv_obj_t *parent, const bt_device_t *device, bool paired_sec
 	lv_obj_set_height(row, BT_ROW_H);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
+	settingsrow_group(parent, row);
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, 18, 0);
 	lv_obj_set_style_pad_ver(row, 0, 0);
@@ -452,6 +454,12 @@ static void add_row(lv_obj_t *parent, const bt_device_t *device, bool paired_sec
 	lv_obj_set_style_pad_column(row, 14, 0);
 
 	lv_obj_set_user_data(row, device->connected ? (void *)1 : NULL);
+	// The device in use is the one row in the accent, with its ink.
+	lv_color_t on_ink = theme_on_accent();
+	if (device->connected) {
+		lv_obj_set_style_bg_color(row, theme()->accent, 0);
+		lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+	}
 	if (paired_section) {
 		lv_obj_add_event_cb(row, paired_row_clicked_cb, LV_EVENT_CLICKED, mac_copy);
 		lv_obj_add_event_cb(row, paired_row_long_pressed_cb, LV_EVENT_LONG_PRESSED, mac_copy);
@@ -461,11 +469,13 @@ static void add_row(lv_obj_t *parent, const bt_device_t *device, bool paired_sec
 	lv_obj_add_event_cb(row, row_free_cb, LV_EVENT_DELETE, mac_copy);
 
 	lv_obj_t *icon = lv_image_create(row);
-	lv_image_set_src(icon, &icon_bluetooth_status);
+	lv_image_set_src(icon, device->connected ? &icon_headphones : &icon_bluetooth_status);
+	lv_obj_set_size(icon, 32, 32);
+	lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CONTAIN);
 	lv_obj_add_style(icon, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
 	if (device->connected) {
-		lv_obj_set_style_image_recolor(icon, theme()->accent, 0);
+		lv_obj_set_style_image_recolor(icon, on_ink, 0);
 	} else if (!paired_section) {
 		lv_obj_set_style_image_opa(icon, LV_OPA_60, 0);
 	}
@@ -479,14 +489,11 @@ static void add_row(lv_obj_t *parent, const bt_device_t *device, bool paired_sec
 	lv_obj_set_height(name, lv_font_get_line_height(&font_ui_24));
 	lv_obj_add_style(name, &theme_style_text, 0);
 	lv_obj_set_style_text_font(name, &font_ui_24, 0);
-
 	if (device->connected) {
-		lv_obj_t *state = lv_label_create(row);
-		lv_label_set_text(state, tr("connected"));
-		lv_obj_add_style(state, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(state, &font_ui_20, 0);
-		lv_obj_set_style_text_color(state, theme()->accent, 0);
+		lv_obj_set_style_text_color(name, on_ink, 0);
 	}
+
+
 
 	// Three dots on every known device, connected or merely paired: a tap on
 	// the row connects, so disconnect and forget need somewhere else to live.
@@ -503,6 +510,10 @@ static void add_row(lv_obj_t *parent, const bt_device_t *device, bool paired_sec
 		lv_image_set_src(dots, &icon_ellipsis_vertical);
 		lv_obj_add_style(dots, &theme_style_icon, 0);
 		lv_obj_set_style_image_opa(dots, LV_OPA_70, 0);
+		if (device->connected) {
+			lv_obj_set_style_image_recolor(dots, on_ink, 0);
+			lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
+		}
 		lv_obj_center(dots);
 	}
 }
@@ -531,10 +542,13 @@ static void add_placeholder(lv_obj_t *parent, const char *text, bool spin) {
 }
 
 static void rebuild_lists(void) {
+	lv_obj_clean(connected_list);
 	lv_obj_clean(paired_list);
 	lv_obj_clean(found_list);
 
 	bool on = bluetooth_get_enabled() && bluetooth_available();
+	lv_obj_set_hidden(pair_btn, !on);
+	lv_obj_set_hidden(connected_label, true);
 	if (!on) {
 		lv_obj_set_hidden(paired_label, true);
 		lv_obj_set_hidden(found_label, true);
@@ -548,9 +562,17 @@ static void rebuild_lists(void) {
 	if (count == 0) {
 		add_placeholder(paired_list, "bt_none", false);
 	}
+	int paired = 0;
 	for (int i = 0; i < count; i++) {
-		add_row(paired_list, &devices[i], true);
+		if (devices[i].connected) {
+			lv_obj_set_hidden(connected_label, false);
+			add_row(connected_list, &devices[i], true);
+		} else {
+			paired++;
+			add_row(paired_list, &devices[i], true);
+		}
 	}
+	lv_obj_set_hidden(paired_label, count != 0 && paired == 0);
 
 	// The "other devices" heading appears only once a scan is running or has
 	// found something: a heading over an empty box with an instruction under it
@@ -766,13 +788,16 @@ static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, co
 
 static lv_obj_t *make_section(lv_obj_t *container, const char *title, lv_obj_t **label_out) {
 	lv_obj_t *label = lv_label_create(container);
-	lv_label_set_text(label, tr(title));
+	settingsrow_upper_text(label, tr(title));
 	// Full width, otherwise the page's centring flex pulls the heading inward.
 	lv_obj_set_width(label, lv_pct(100));
 	lv_obj_add_style(label, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_set_style_pad_top(label, 6, 0);
-	lv_obj_set_style_pad_hor(label, 4, 0);
+	// A section label, in the design's small type.
+	lv_obj_set_style_text_font(label, &font_ui_16_bold, 0);
+	lv_obj_set_style_text_letter_space(label, 1, 0);
+	lv_obj_set_style_pad_top(label, 16, 0);
+	lv_obj_set_style_pad_bottom(label, 8, 0);
+	lv_obj_set_style_pad_hor(label, 8, 0);
 	if (label_out) {
 		*label_out = label;
 	}
@@ -791,7 +816,7 @@ static lv_obj_t *make_section(lv_obj_t *container, const char *title, lv_obj_t *
 }
 
 void btsettings_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(btsettings_screen, cfg, "bluetooth");
+	lv_obj_t *container = settingsrow_playback_page(btsettings_screen, cfg, "bluetooth");
 	settingsrow_title_corner_slots(settingsrow_page_title(btsettings_screen), cfg, 3);
 
 	settingsrow_toggle(container, "bluetooth", &bt_switch, switch_changed_cb);
@@ -803,12 +828,15 @@ void btsettings_init(gui_config_t *cfg) {
 	lv_obj_set_width(status_label, lv_pct(100));
 	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_20, 0);
-	lv_obj_set_style_pad_hor(status_label, 4, 0);
+	lv_obj_set_style_pad_hor(status_label, 8, 0);
+	lv_obj_set_style_pad_top(status_label, 8, 0);
 	lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
 
+	connected_list = make_section(container, "connected", &connected_label);
 	paired_list = make_section(container, "bt_paired_devices", &paired_label);
 	found_list = make_section(container, "bt_other_devices", &found_label);
 	lv_obj_set_style_pad_bottom(found_list, 12, 0);
+	pair_btn = settingsrow_button(container, "bt_pair_new", scan_clicked_cb, NULL);
 
 	// The gear takes slot 0, the same corner the Music page uses for its own.
 	// Receiver mode sits immediately to its left, and the scan button moves out

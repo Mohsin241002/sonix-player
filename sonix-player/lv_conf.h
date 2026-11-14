@@ -66,7 +66,27 @@
  * amount of memory however much of it is on screen. */
 #define LV_USE_FREETYPE 1
 #define LV_FREETYPE_USE_LVGL_PORT 0
-#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
+/* 512 rather than 256: the redesign draws Inter semibold at seven sizes and
+ * regular at as many again, and a list page alone uses four of them. At 256 a
+ * scroll through a long list evicted glyphs that the next frame needed and
+ * FreeType rasterised them again; only glyphs actually drawn are cached, so
+ * the extra room costs memory only on pages that use it. Must be a power of 2. */
+#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 512
+
+/* Rounded corners. The software renderer keeps the anti-aliased quarter-circle
+ * of the last few radii it drew; the default of 4 is fewer than one page here
+ * uses (rows 20, chips 26, covers 16, pills, knobs, the play disc), so every
+ * frame of a scroll recomputed some of them. Each entry is a few hundred bytes. */
+#define LV_DRAW_SW_CIRCLE_CACHE_SIZE 16
+
+/* The blurred edge of the slider knobs and the keyboard's keys, kept between
+ * draws instead of blurred again each frame (the progress knob moves every
+ * tick). The cache is one shape of at most this many pixels a side: 32*32 bytes. */
+#define LV_DRAW_SW_SHADOW_CACHE_SIZE 32
+
+/* Style lookups remember which properties an object has none of, so the
+ * theme's long property walk is skipped on every redraw of a list row. */
+#define LV_OBJ_STYLE_CACHE 1
 
 /* Song titles, tags and station names in Arabic. The text is kept in the
  * order it is written in and LVGL draws each line right to left where the

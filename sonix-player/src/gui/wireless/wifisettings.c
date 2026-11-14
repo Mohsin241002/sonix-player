@@ -363,8 +363,8 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 	lv_obj_set_height(row, WIFI_ROW_H);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
+	// One surface for the networks of a section, a hairline between them.
+	settingsrow_group(parent, row);
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, 18, 0);
 	// The button default carries vertical padding of its own, which cuts the
@@ -426,13 +426,26 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 		state = tr("wifi_secured");
 	}
 
+	if (net->current) {
+		// The network in use is the one row in the accent, with its ink, as
+		// the Bluetooth page shows the device in use.
+		lv_color_t ink = theme_on_accent();
+		lv_obj_set_height(row, 92);
+		lv_obj_set_style_bg_color(row, theme()->accent, 0);
+		lv_obj_set_style_bg_color(row, theme()->accent, LV_STATE_PRESSED);
+		lv_obj_set_style_opa(row, LV_OPA_80, LV_STATE_PRESSED);
+		lv_obj_set_style_image_recolor(icon, ink, 0);
+		lv_obj_set_style_text_color(name, ink, 0);
+		lv_obj_set_style_text_font(name, &font_ui_24_bold, 0);
+	}
+
 	if (state) {
 		lv_obj_t *sub = lv_label_create(text);
 		lv_label_set_text(sub, state);
 		lv_obj_add_style(sub, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(sub, &font_ui_20, 0);
 		if (net->current) {
-			lv_obj_set_style_text_color(sub, theme()->accent, 0);
+			lv_obj_set_style_text_color(sub, theme_on_accent(), 0);
 		}
 		// Measured from the middle rather than the top: the pair then sits
 		// centred in the row whatever padding the button style brings along.
@@ -456,6 +469,10 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 		lv_image_set_src(dots, &icon_ellipsis_vertical);
 		lv_obj_add_style(dots, &theme_style_icon, 0);
 		lv_obj_set_style_image_opa(dots, LV_OPA_70, 0);
+		if (net->current) {
+			lv_obj_set_style_image_recolor(dots, theme_on_accent(), 0);
+			lv_obj_set_style_image_opa(dots, LV_OPA_COVER, 0);
+		}
 		lv_obj_center(dots);
 	}
 }
@@ -809,12 +826,15 @@ static void build_details_page(gui_config_t *cfg) {
 // the left where every other heading in the interface sits.
 static lv_obj_t *make_heading(lv_obj_t *parent, const char *tag) {
 	lv_obj_t *heading = lv_label_create(parent);
-	lv_label_set_text(heading, tr(tag));
+	settingsrow_upper_text(heading, tr(tag));
 	lv_obj_set_width(heading, lv_pct(100));
 	lv_obj_add_style(heading, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(heading, &font_ui_22, 0);
-	lv_obj_set_style_pad_top(heading, 6, 0);
-	lv_obj_set_style_pad_hor(heading, 4, 0);
+	// A section label, in the design's small type.
+	lv_obj_set_style_text_font(heading, &font_ui_16_bold, 0);
+	lv_obj_set_style_text_letter_space(heading, 1, 0);
+	lv_obj_set_style_pad_top(heading, 16, 0);
+	lv_obj_set_style_pad_bottom(heading, 8, 0);
+	lv_obj_set_style_pad_hor(heading, 8, 0);
 	return heading;
 }
 
@@ -834,7 +854,7 @@ static lv_obj_t *make_rows(lv_obj_t *parent) {
 }
 
 void wifisettings_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(wifisettings_screen, cfg, "wi_fi");
+	lv_obj_t *container = settingsrow_playback_page(wifisettings_screen, cfg, "wi_fi");
 
 	settingsrow_toggle(container, "wi_fi", &wifi_switch, switch_changed_cb);
 	if (wifi_get_enabled()) {
@@ -852,10 +872,10 @@ void wifisettings_init(gui_config_t *cfg) {
 	// and everything else. Both boxes exist from the start and are hidden when
 	// they have nothing in them, so a refresh is one lv_obj_clean() and not a
 	// hunt through the page's children.
-	current_label = make_heading(container, "wifi_current_network");
+	current_label = make_heading(container, "wifi_sec_connected");
 	current_list = make_rows(container);
 
-	section_label = make_heading(container, "wifi_available_networks");
+	section_label = make_heading(container, "wifi_sec_other");
 	list = make_rows(container);
 
 	scan_btn = corner_button(wifisettings_screen, cfg, &icon_wifi_search, &scan_icon);

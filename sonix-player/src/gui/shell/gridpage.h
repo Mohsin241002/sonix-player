@@ -40,6 +40,10 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 void gridpage_set_entries(lv_obj_t *grid, gui_config_t *cfg, const grid_entry_t *entries, int count, int columns,
 						  int rows, bool clear_corner_buttons);
 
+// Shortens the grid by `px` at the bottom, for a page that puts the tab bar
+// and the mini-player under its tiles.
+void gridpage_reserve_bottom(lv_obj_t *grid, int px);
+
 // Enables vertical scrolling; destination lists do this by default.
 void gridpage_set_scrolling(lv_obj_t *grid);
 

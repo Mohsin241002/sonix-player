@@ -21,27 +21,22 @@
 
 lv_obj_t *metronomepage_screen;
 
-#define DEFAULT_BPM 100
+#define DEFAULT_BPM 120
 #define DEFAULT_BEATS 4
 
-// How often the arm is drawn again while it moves.
-#define FRAME_MS 30
-
-// The widest swing either side of upright, in degrees.
-#define SWING_DEG 26.0f
+// Sample less often than the renderer, only while the metronome runs.
+#define FRAME_MS 40
 
 // Taps further apart than this start a new tempo; the last few taps within it
 // are averaged.
 #define TAP_RESET_MS 2000
 #define TAP_KEEP 5
 
-#define ROUND_BTN 64
-#define PLAY_BTN 88
-#define PILL_H 56
-#define DOT 16
-#define DOT_FIRST 20
+#define ROUND_BTN 88 // the design's slower / faster discs
+#define PLAY_BTN 112 // and its play disc, in the accent
+#define PILL_H 72
+#define DOT 62
 
-static lv_obj_t *drawing;
 static lv_obj_t *dots[METRONOME_BEATS_MAX];
 static lv_obj_t *bpm_label;
 static lv_obj_t *tempo_label;
@@ -54,7 +49,6 @@ static lv_obj_t *play_btn;
 static lv_obj_t *play_glyph;
 static lv_timer_t *frame_timer;
 
-static float angle;	   // of the arm as drawn, in degrees; positive leans right
 static int lit_beat = -1; // the dot shown as the beat being heard, -1 for none
 static bool shown_running;
 static bool config_dirty;
@@ -87,149 +81,13 @@ static const char *tempo_name(int bpm) {
 	return name;
 }
 
-// ---------------------------------------------------------------------------
-// the drawing
-//
-// A metronome as GNOME draws its icons: flat shapes, round corners, the theme's
-// own colours. A body narrowing to the top, a darker slot in it with a scale,
-// and the arm with its weight. The weight sits higher the slower the tempo, as
-// on a real one.
-// ---------------------------------------------------------------------------
-
-static lv_point_precise_t pt(float x, float y) {
-	lv_point_precise_t p = {(lv_value_precise_t)lroundf(x), (lv_value_precise_t)lroundf(y)};
-	return p;
-}
-
-static void line(lv_layer_t *layer, float x1, float y1, float x2, float y2, float width, lv_color_t color,
-				 lv_opa_t opa) {
-	lv_draw_line_dsc_t dsc;
-	lv_draw_line_dsc_init(&dsc);
-	dsc.p1 = pt(x1, y1);
-	dsc.p2 = pt(x2, y2);
-	dsc.width = (int32_t)lroundf(width);
-	dsc.color = color;
-	dsc.opa = opa;
-	dsc.round_start = 1;
-	dsc.round_end = 1;
-	lv_draw_line(layer, &dsc);
-}
-
-static void triangle(lv_layer_t *layer, lv_point_precise_t a, lv_point_precise_t b, lv_point_precise_t c,
-					 lv_color_t color) {
-	lv_draw_triangle_dsc_t dsc;
-	lv_draw_triangle_dsc_init(&dsc);
-	dsc.p[0] = a;
-	dsc.p[1] = b;
-	dsc.p[2] = c;
-	dsc.color = color;
-	dsc.opa = LV_OPA_COVER;
-	lv_draw_triangle(layer, &dsc);
-}
-
-static void circle(lv_layer_t *layer, float x, float y, float r, lv_color_t color) {
-	lv_draw_rect_dsc_t dsc;
-	lv_draw_rect_dsc_init(&dsc);
-	dsc.bg_color = color;
-	dsc.radius = LV_RADIUS_CIRCLE;
-	lv_area_t a = {(int32_t)lroundf(x - r), (int32_t)lroundf(y - r), (int32_t)lroundf(x + r), (int32_t)lroundf(y + r)};
-	lv_draw_rect(layer, &dsc, &a);
-}
-
-// A trapezoid with rounded corners, symmetric about `cx`: filled inside its
-// corners' centres, and its edges stroked round with the corners' diameter.
-static void trapezoid(lv_layer_t *layer, float cx, float top, float bottom, float top_half, float bottom_half,
-					  float radius, lv_color_t color) {
-	// Moved in along the slanted sides by a little more than the radius, so
-	// the round stroke lands on the outline.
-	float slant = (bottom_half - top_half) / (bottom - top);
-	float inset = radius * sqrtf(1.0f + slant * slant);
-	float t = top + radius, b = bottom - radius;
-	float th = top_half + slant * radius - inset;
-	float bh = bottom_half - slant * radius - inset;
-	// A rectangle down the middle and a triangle either side of it: the joins
-	// run straight down on whole pixels, where a diagonal one would show as a
-	// faint seam.
-	int32_t il = (int32_t)lroundf(cx - th), ir = (int32_t)lroundf(cx + th);
-	lv_draw_rect_dsc_t rect;
-	lv_draw_rect_dsc_init(&rect);
-	rect.bg_color = color;
-	lv_area_t middle = {il, (int32_t)lroundf(t), ir, (int32_t)lroundf(b)};
-	lv_draw_rect(layer, &rect, &middle);
-	lv_point_precise_t tl = {il, (lv_value_precise_t)lroundf(t)}, tr = {ir, (lv_value_precise_t)lroundf(t)};
-	lv_point_precise_t ml = {il, (lv_value_precise_t)lroundf(b)}, mr = {ir, (lv_value_precise_t)lroundf(b)};
-	triangle(layer, tl, ml, pt(cx - bh, b), color);
-	triangle(layer, tr, mr, pt(cx + bh, b), color);
-	float w = radius * 2.0f;
-	line(layer, cx - th, t, cx + th, t, w, color, LV_OPA_COVER);
-	line(layer, cx + th, t, cx + bh, b, w, color, LV_OPA_COVER);
-	line(layer, cx + bh, b, cx - bh, b, w, color, LV_OPA_COVER);
-	line(layer, cx - bh, b, cx - th, t, w, color, LV_OPA_COVER);
-}
-
-static void draw_cb(lv_event_t *e) {
-	lv_obj_t *obj = lv_event_get_current_target(e);
-	lv_layer_t *layer = lv_event_get_layer(e);
-	if (!layer) {
-		return;
-	}
-	lv_area_t area;
-	lv_obj_get_coords(obj, &area);
-	float w = (float)lv_area_get_width(&area);
-	float h = (float)lv_area_get_height(&area);
-
-	// The whole figure fits the box: as tall as it can be at its proportions.
-	float H = h < w * 1.25f ? h : w * 1.25f;
-	float W = H * 0.80f;
-	float cx = (float)area.x1 + w / 2.0f;
-	float top = (float)area.y1 + (h - H) / 2.0f;
-
-	const theme_palette_t *t = theme();
-	lv_color_t body = lv_color_mix(t->accent, t->surface, 96);
-	lv_color_t face = t->screen_bg;
-	lv_color_t arm = t->text_primary;
-
-	float body_bottom = top + H;
-	trapezoid(layer, cx, top, body_bottom, W * 0.17f, W * 0.42f, H * 0.045f, body);
-
-	// The slot the arm swings in front of, with its scale.
-	float face_top = top + H * 0.11f;
-	float face_bottom = body_bottom - H * 0.10f;
-	trapezoid(layer, cx, face_top, face_bottom, W * 0.065f, W * 0.20f, H * 0.02f, face);
-	for (int i = 1; i <= 6; i++) {
-		float y = face_top + (face_bottom - face_top) * (float)i / 8.0f;
-		float half = (W * 0.065f + (W * 0.20f - W * 0.065f) * (y - face_top) / (face_bottom - face_top)) * 0.45f;
-		line(layer, cx - half, y, cx + half, y, H * 0.008f > 2.0f ? H * 0.008f : 2.0f, t->text_secondary, LV_OPA_40);
-	}
-
-	// The arm, from its pivot near the bottom of the slot.
-	float px = cx, py = face_bottom - H * 0.045f;
-	float length = py - (top + H * 0.02f);
-	float rad = angle * (float)M_PI / 180.0f;
-	float dx = sinf(rad), dy = -cosf(rad);
-	float arm_w = H * 0.028f > 4.0f ? H * 0.028f : 4.0f;
-	line(layer, px, py, px + dx * length, py + dy * length, arm_w, arm, LV_OPA_COVER);
-
-	// The weight: higher on the arm the slower the tempo.
-	float slow = 1.0f - (float)(metronome_bpm() - METRONOME_BPM_MIN) / (float)(METRONOME_BPM_MAX - METRONOME_BPM_MIN);
-	float at = length * (0.40f + 0.46f * slow);
-	float half = H * 0.035f;
-	float wx = px + dx * at, wy = py + dy * at;
-	line(layer, wx - dx * half, wy - dy * half, wx + dx * half, wy + dy * half, H * 0.085f, t->accent, LV_OPA_COVER);
-
-	circle(layer, px, py, H * 0.032f, arm);
-	circle(layer, px, py, H * 0.012f, face);
-}
-
-// ---------------------------------------------------------------------------
-// the controls
-// ---------------------------------------------------------------------------
-
 static void paint_dots(void) {
 	int beats = metronome_beats();
 	for (int i = 0; i < METRONOME_BEATS_MAX; i++) {
 		lv_obj_set_hidden(dots[i], i >= beats);
-		bool lit = i == lit_beat;
+		int size = beats > 6 ? DOT - 10 : DOT;
+		lv_obj_set_size(dots[i], size, size);
+		bool lit = i == (lit_beat < 0 ? 0 : lit_beat);
 		lv_obj_set_style_bg_color(dots[i], lit ? theme()->accent : theme()->text_secondary, 0);
 		lv_obj_set_style_bg_opa(dots[i], lit ? LV_OPA_COVER : LV_OPA_40, 0);
 	}
@@ -242,11 +100,15 @@ static void show_tempo(void) {
 	if (lv_slider_get_value(slider) != bpm) {
 		lv_slider_set_value(slider, bpm, LV_ANIM_OFF);
 	}
-	lv_obj_invalidate(drawing);
 }
 
 static void show_running(bool running) {
 	shown_running = running;
+	if (running) {
+		lv_timer_resume(frame_timer);
+	} else {
+		lv_timer_pause(frame_timer);
+	}
 	lv_image_set_src(play_glyph, running ? &icon_pause_large : &icon_play_large);
 	// While it clicks the screen stays on: the beat is something to watch.
 	power_hold_screen_for_view(running);
@@ -366,20 +228,11 @@ static void frame_cb(lv_timer_t *timer) {
 		power_hold_screen_for_view(true);
 	}
 
-	float target = angle;
 	int beat = -1;
-	uint32_t count = 0;
-	float phase = 0.0f;
-	if (running && metronome_position(&beat, &count, &phase)) {
-		// Through the middle on every beat, out to one side and back between
-		// them, the other side each time: the way a real one moves.
-		target = SWING_DEG * sinf((float)M_PI * phase) * ((count & 1) ? -1.0f : 1.0f);
-	} else if (!running) {
-		target = fabsf(angle) < 0.3f ? 0.0f : angle * 0.7f;
-	}
-	if (target != angle) {
-		angle = target;
-		lv_obj_invalidate(drawing);
+	if (running) {
+		uint32_t count;
+		float phase;
+		metronome_position(&beat, &count, &phase);
 	}
 	if (beat != lit_beat && (running || lit_beat >= 0)) {
 		lit_beat = beat;
@@ -416,7 +269,7 @@ static lv_obj_t *round_button(lv_obj_t *parent, int size, const lv_image_dsc_t *
 static lv_obj_t *pill_button(lv_obj_t *parent, const char *text, lv_obj_t **label_out) {
 	lv_obj_t *btn = lv_btn_create(parent);
 	lv_obj_set_size(btn, LV_SIZE_CONTENT, PILL_H);
-	lv_obj_set_style_min_width(btn, 104, 0);
+	lv_obj_set_style_min_width(btn, 124, 0);
 	lv_obj_set_style_pad_hor(btn, 24, 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
 	lv_obj_set_style_shadow_width(btn, 0, 0);
@@ -438,23 +291,22 @@ static void refresh_theme(void) {
 		lv_obj_set_style_bg_color(pill_btns[i], t->surface_pressed, 0);
 		lv_obj_set_style_text_color(pill_labels[i], t->text_primary, 0);
 	}
+	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
 	lv_obj_set_style_bg_color(play_btn, t->accent, 0);
+	lv_obj_set_style_image_recolor(play_glyph, theme_on_accent(), 0);
 	theme_apply_slider_knob(slider);
 	paint_dots();
-	lv_obj_invalidate(drawing);
 }
 
 static void loaded_cb(lv_event_t *e) {
 	(void)e;
 	volume_overlay_allow_outside_player(true);
 	lit_beat = -1;
-	angle = 0.0f;
 	tap_count = 0;
 	lv_label_set_text(pill_labels[1], BEAT_NAMES[metronome_beats()]);
 	paint_dots();
 	show_tempo();
 	show_running(metronome_running());
-	lv_timer_resume(frame_timer);
 }
 
 // Leaving stops it: the output goes back to the music.
@@ -502,23 +354,15 @@ void metronomepage_init(gui_config_t *cfg) {
 	lv_obj_set_flex_align(page, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	switcher_attach_back_gesture(page);
 
-	// The drawing takes what the controls leave.
-	drawing = lv_obj_create(page);
-	lv_obj_remove_style_all(drawing);
-	lv_obj_set_width(drawing, lv_pct(100));
-	lv_obj_set_flex_grow(drawing, 1);
-	lv_obj_set_clickable(drawing, false);
-	lv_obj_add_event_cb(drawing, draw_cb, LV_EVENT_DRAW_MAIN, NULL);
-
-	// A dot for each beat of the bar, the first one larger.
+	// The active dot advances on each beat.
 	lv_obj_t *dot_row = plain_row(page);
-	lv_obj_set_style_pad_column(dot_row, 14, 0);
+	lv_obj_set_style_pad_column(dot_row, 8, 0);
 	lv_obj_set_style_margin_top(dot_row, 14, 0);
-	lv_obj_set_height(dot_row, DOT_FIRST);
+	lv_obj_set_height(dot_row, DOT + 12);
 	for (int i = 0; i < METRONOME_BEATS_MAX; i++) {
 		dots[i] = lv_obj_create(dot_row);
 		lv_obj_remove_style_all(dots[i]);
-		int size = i == 0 ? DOT_FIRST : DOT;
+		int size = metronome_beats() > 6 ? DOT - 10 : DOT;
 		lv_obj_set_size(dots[i], size, size);
 		lv_obj_set_style_radius(dots[i], LV_RADIUS_CIRCLE, 0);
 		lv_obj_set_style_bg_opa(dots[i], LV_OPA_40, 0);
@@ -530,9 +374,9 @@ void metronomepage_init(gui_config_t *cfg) {
 	lv_obj_set_style_margin_top(tempo_row, 10, 0);
 	round_btns[0] = round_button(tempo_row, ROUND_BTN, &icon_minus, &round_glyphs[0]);
 	bpm_label = lv_label_create(tempo_row);
-	lv_obj_set_width(bpm_label, 170);
+	lv_obj_set_width(bpm_label, 230);
 	lv_obj_add_style(bpm_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(bpm_label, &font_ui_64_bold, 0);
+	lv_obj_set_style_text_font(bpm_label, &font_ui_120_bold, 0);
 	lv_obj_set_style_text_align(bpm_label, LV_TEXT_ALIGN_CENTER, 0);
 	round_btns[1] = round_button(tempo_row, ROUND_BTN, &icon_plus, &round_glyphs[1]);
 	for (int i = 0; i < 2; i++) {
@@ -563,6 +407,20 @@ void metronomepage_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_offset_y(slider, 1, LV_PART_KNOB);
 	lv_obj_set_ext_click_area(slider, 20);
 	lv_obj_add_event_cb(slider, slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+	lv_obj_t *scale = plain_row(page);
+	lv_obj_set_width(scale, lv_pct(92));
+	lv_obj_set_flex_align(scale, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	for (int i = 0; i < 2; i++) {
+		lv_obj_t *limit = lv_label_create(scale);
+		lv_label_set_text_fmt(limit, "%d", i ? METRONOME_BPM_MAX : METRONOME_BPM_MIN);
+		lv_obj_add_style(limit, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(limit, &font_ui_18, 0);
+	}
+	lv_obj_t *space = lv_obj_create(page);
+	lv_obj_remove_style_all(space);
+	lv_obj_set_flex_grow(space, 1);
+	lv_obj_set_clickable(space, false);
 
 	// Tap, start and stop, the bar.
 	lv_obj_t *bottom = plain_row(page);

@@ -52,6 +52,14 @@ extern lv_font_t font_ui_32;
 // The A and B letters on the Gearboy buttons, nothing else: on a 110 pixel
 // circle the regular weight is lost.
 extern lv_font_t font_ui_36_bold;
+// The Signal design's semibold sizes: labels and badges (16, 18), headings
+// (28, 32), the lyric line being sung (38) and the lock screen's clock (120).
+extern lv_font_t font_ui_16_bold;
+extern lv_font_t font_ui_18_bold;
+extern lv_font_t font_ui_28_bold;
+extern lv_font_t font_ui_32_bold;
+extern lv_font_t font_ui_38_bold;
+extern lv_font_t font_ui_120_bold;
 extern lv_font_t font_ui_44_bold; // home heading
 // The letter shown in the middle of the screen while the A-Z list index is in
 // use: one letter at a time, and it has to read from a distance.

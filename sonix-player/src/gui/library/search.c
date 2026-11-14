@@ -1,4 +1,5 @@
 #include "search.h"
+#include "src/gui/shell/navbar.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -41,11 +42,11 @@ lv_obj_t *search_screen;
 // work.
 // ---------------------------------------------------------------------------
 
-#define SEARCH_THUMB 56
-#define SEARCH_ROW_H 76
-#define SEARCH_ROW_GAP 8
+#define SEARCH_THUMB 60
+#define SEARCH_ROW_H 80
+#define SEARCH_ROW_GAP 0
 #define SEARCH_PITCH (SEARCH_ROW_H + SEARCH_ROW_GAP)
-#define SEARCH_THUMB_POLL_MS 200
+#define SEARCH_THUMB_POLL_MS 80
 #define SEARCH_PILLS_H 56
 #define SEARCH_PILLS_GAP 10
 
@@ -77,6 +78,9 @@ static void search_keyboard_show(bool visible);
 static int results_top; // where the scrolling area starts
 static int screen_h;
 static int keyboard_height;
+static int search_footer;
+static lv_obj_t *search_tabs;
+static lv_obj_t *search_icon;
 
 // The query the results answer, and the hits of each category. NULL handles
 // while no search stands.
@@ -509,7 +513,10 @@ static void row_create(row_t *row) {
 	lv_obj_set_size(button, lv_pct(100), SEARCH_ROW_H);
 	lv_obj_add_style(button, &theme_style_card, 0);
 	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(button, 12, 0);
+	lv_obj_set_style_radius(button, 16, 0);
+	// Plain rows on the page; the surface shows only under a finger.
+	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_STATE_PRESSED);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_hor(button, 16, 0);
@@ -566,9 +573,10 @@ static void row_create(row_t *row) {
 
 static void pill_paint(category_t cat) {
 	bool on = cat == current_cat;
-	lv_obj_set_style_bg_color(pill[cat], on ? theme()->accent : theme()->surface_pressed, 0);
-	lv_obj_set_style_text_color(pill_name[cat], on ? lv_color_white() : theme()->text_primary, 0);
-	lv_obj_set_style_text_color(pill_count[cat], on ? lv_color_white() : theme()->text_secondary, 0);
+	// A segment: the chosen one a step lighter, its count in the accent.
+	lv_obj_set_style_bg_color(pill[cat], on ? theme()->surface_pressed : theme()->surface, 0);
+	lv_obj_set_style_text_color(pill_name[cat], on ? theme()->text_primary : theme()->text_secondary, 0);
+	lv_obj_set_style_text_color(pill_count[cat], on ? theme()->accent : theme()->text_secondary, 0);
 }
 
 static void pills_paint(void) {
@@ -607,7 +615,7 @@ static lv_obj_t *pill_create(category_t cat) {
 	lv_obj_t *btn = lv_btn_create(pills);
 	lv_obj_set_height(btn, SEARCH_PILLS_H);
 	lv_obj_set_flex_grow(btn, 1);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_radius(btn, 12, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_pad_hor(btn, 8, 0);
@@ -763,7 +771,8 @@ static void kb_search_cb(lv_event_t *e) {
 static void layout_results(void) {
 	bool kb_visible = keyboard_is_visible(keyboard);
 	int top = results_top + SEARCH_PILLS_H + SEARCH_PILLS_GAP;
-	int height = screen_h - top - (kb_visible ? keyboard_height : 0);
+	int height = screen_h - top - (kb_visible ? keyboard_height : search_footer);
+	lv_obj_set_hidden(search_tabs, kb_visible);
 	if (height < 60) {
 		height = 60;
 	}
@@ -816,6 +825,9 @@ static void refresh_theme(void) {
 	if (pill[0]) {
 		pills_paint();
 	}
+	if (field) {
+		lv_obj_set_style_border_color(field, theme()->accent, 0);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -825,9 +837,10 @@ void search_open(void) { switch_screen(search_screen); }
 void search_init(gui_config_t *cfg) {
 	search_screen = lv_obj_create(NULL);
 	lv_obj_add_style(search_screen, &theme_style_screen, 0);
-	settingsrow_title(search_screen, cfg, "search_2");
-
-	int top = settingsrow_content_top(cfg);
+	// No heading: the field itself is the page's header row, beside the
+	// chevron, which leaves the results the room the heading took.
+	int top = cfg->top_bar_height + cfg->padding - 3;
+	int field_x = cfg->padding + 56 + 4;
 	int keyboard_h = 316; // tall enough for honest fingertip-sized keys
 	screen_h = cfg->screen_height;
 	keyboard_height = keyboard_h;
@@ -838,19 +851,30 @@ void search_init(gui_config_t *cfg) {
 	lv_textarea_set_placeholder_text(field, tr("search"));
 	// Tall enough for the 24 px line plus its padding: at 56 the text does not
 	// quite fit and the content bobs on every keystroke.
-	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(field, cfg->screen_width - field_x - 12, 62);
 	lv_obj_set_scrollbar_mode(field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
+	lv_obj_align(field, LV_ALIGN_TOP_LEFT, field_x, top);
 	lv_obj_add_style(field, &theme_style_card, 0);
-	lv_obj_set_style_radius(field, 12, 0);
-	lv_obj_set_style_border_width(field, 0, 0);
+	// A pill ringed in the accent, as the design draws the field in use.
+	lv_obj_set_style_radius(field, 31, 0);
+	lv_obj_set_style_border_width(field, 2, 0);
+	lv_obj_set_style_border_color(field, theme()->accent, 0);
+	lv_obj_set_style_border_opa(field, LV_OPA_COVER, 0);
 	lv_obj_set_style_shadow_width(field, 0, 0);
 	lv_obj_set_style_pad_all(field, 14, 0);
+	lv_obj_set_style_pad_left(field, 52, 0);
 	lv_obj_set_style_text_font(field, &font_ui_24, 0);
 	lv_obj_add_event_cb(field, field_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 	lv_obj_add_event_cb(field, field_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	caret_apply_style();
+	search_icon = lv_image_create(search_screen);
+	lv_image_set_src(search_icon, &icon_search);
+	lv_obj_set_size(search_icon, 28, 28);
+	lv_image_set_inner_align(search_icon, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_set_pos(search_icon, field_x + 18, top + 17);
+	lv_obj_add_style(search_icon, &theme_style_icon, 0);
+	lv_obj_set_clickable(search_icon, false);
 
 	// The clear button, over the field's right edge: wipes the query and the
 	// results in one tap. Hidden while the field is empty.
@@ -926,6 +950,20 @@ void search_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(empty_label, &font_ui_24, 0);
 	lv_obj_align(empty_label, LV_ALIGN_TOP_LEFT, cfg->padding, results_top + 16);
 	lv_obj_set_hidden(empty_label, true);
+
+	search_footer = navbar_attach(search_screen, cfg, NAVBAR_SEARCH, true);
+	lv_obj_t *search_mini = lv_obj_get_child(search_screen, -1);
+	lv_obj_t *tabs = lv_obj_get_child(search_screen, -2);
+	search_tabs = lv_obj_create(search_screen);
+	lv_obj_remove_style_all(search_tabs);
+	lv_obj_set_size(search_tabs, cfg->screen_width, search_footer);
+	lv_obj_align(search_tabs, LV_ALIGN_BOTTOM_MID, 0, 0);
+	lv_obj_set_scrollable(search_tabs, false);
+	lv_obj_set_clickable(search_tabs, false);
+	lv_obj_set_parent(tabs, search_tabs);
+	lv_obj_set_parent(search_mini, search_tabs);
+	lv_obj_align(tabs, LV_ALIGN_BOTTOM_MID, 0, 0);
+	lv_obj_align(search_mini, LV_ALIGN_BOTTOM_MID, 0, -NAVBAR_TABS_HEIGHT);
 
 	keyboard = keyboard_create(search_screen, cfg->screen_width, keyboard_h, field, &icon_search, NULL, kb_search_cb,
 							   NULL);

@@ -152,7 +152,7 @@ static void loaded_cb(lv_event_t *e) {
 
 static void build_page(gui_config_t *cfg) {
 	page_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(page_screen, cfg, "lastfm");
+	lv_obj_t *container = settingsrow_playback_page(page_screen, cfg, "lastfm");
 
 	settingsrow_toggle(container, "lastfm_scrobble", &enabled_switch, enabled_cb);
 	settingsrow_add(container, "lastfm_account", &account_value, account_cb, NULL);

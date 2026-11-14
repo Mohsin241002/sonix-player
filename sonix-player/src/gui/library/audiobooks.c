@@ -232,7 +232,7 @@ static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **b
 #define PLAYMARK_HEIGHT 52
 #define PLAYMARK_INSET 4 // from the row's left edge
 
-#define THUMB_POLL_MS 150
+#define THUMB_POLL_MS 60 // only while art is pending: a cover shows within a frame or four of being ready
 
 typedef struct {
 	char name[256];

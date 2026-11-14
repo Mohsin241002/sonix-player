@@ -1,5 +1,7 @@
 #include "screensaver.h"
+#include "src/system/bluetooth/bluetooth.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -16,6 +18,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/device/clock.h"
 #include "src/system/core/config.h"
+#include "src/system/core/lang.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/device/power.h"
 #include "src/system/device/screensaverpics.h"
@@ -212,7 +215,286 @@ void screensaver_set_enabled(bool on) {
 // what it shows
 // ---------------------------------------------------------------------------
 
-static void refresh_clock(void) { clocklabel_refresh(clock_label); }
+// ---------------------------------------------------------------------------
+// The lock screen
+//
+// With the album as its source the screensaver is the design's lock screen:
+// the date and a very large clock at the top, and at the bottom a card with
+// the sleeve, the names, the format, where the track has got to and the three
+// transport buttons. It covers the older full-bleed picture, which the Images
+// source still uses.
+// ---------------------------------------------------------------------------
+
+static lv_obj_t *lock;		   // the whole lock screen, over the picture and the strip
+static lv_obj_t *lock_date;
+static lv_obj_t *lock_clock;
+static lv_obj_t *lock_cover;
+static lv_obj_t *lock_note;
+static lv_obj_t *lock_title;
+static lv_obj_t *lock_artist;
+static lv_obj_t *lock_badge;
+static lv_obj_t *lock_elapsed;
+static lv_obj_t *lock_total;
+static lv_obj_t *lock_bar;
+static lv_obj_t *lock_play_icon;
+static bool lock_dragged; // the press in progress has become the swipe that unlocks
+static int lock_day = -1;
+
+static void lock_time(lv_obj_t *label, double seconds) {
+	unsigned value = seconds > 0 && seconds < 360000 ? (unsigned)seconds : 0;
+	char text[24];
+	if (value >= 3600) {
+		snprintf(text, sizeof(text), "%u:%02u:%02u", value / 3600, value / 60 % 60, value % 60);
+	} else {
+		snprintf(text, sizeof(text), "%u:%02u", value / 60, value % 60);
+	}
+	if (strcmp(lv_label_get_text(label), text) != 0) {
+		lv_label_set_text(label, text);
+	}
+}
+
+// What moves from second to second: the date at midnight, the line, the two
+// clocks either side of it and the play glyph.
+static void lock_tick(void) {
+	if (!lock || lv_obj_is_hidden(lock)) {
+		return;
+	}
+	clocklabel_refresh(lock_clock);
+
+	int day = 0;
+	char date[64] = "";
+	if (clock_is_set()) {
+		time_t now = time(NULL);
+		struct tm local;
+		localtime_r(&now, &local);
+		day = local.tm_yday + 1;
+		if (day != lock_day) {
+			strftime(date, sizeof(date), "%A %e %B", &local);
+			for (char *c = date; *c; c++) {
+				if (*c >= 'a' && *c <= 'z') {
+					*c = (char)(*c - 32);
+				}
+			}
+			lv_label_set_text(lock_date, date);
+		}
+	} else if (lock_day != 0) {
+		lv_label_set_text(lock_date, "");
+	}
+	lock_day = day;
+
+	device_state_t state;
+	device_state_get(&state);
+	int progress = !state.live && state.progress_total_secs > 0
+					   ? (int)(1000.0 * state.progress_current_secs / state.progress_total_secs)
+					   : 0;
+	if (progress < 0) {
+		progress = 0;
+	}
+	if (progress > 1000) {
+		progress = 1000;
+	}
+	if (lv_bar_get_value(lock_bar) != progress) {
+		lv_bar_set_value(lock_bar, progress, LV_ANIM_OFF);
+	}
+	lock_time(lock_elapsed, state.live ? 0 : state.progress_current_secs);
+	lock_time(lock_total, state.live ? 0 : state.progress_total_secs);
+	const lv_image_dsc_t *glyph = state.status == AUDIO_STATUS_PLAYING ? &icon_pause_large : &icon_play_large;
+	if (lv_image_get_src(lock_play_icon) != glyph) {
+		lv_image_set_src(lock_play_icon, glyph);
+	}
+	const char *format = player_format_text();
+	bt_device_t output;
+	if (bluetooth_connected_device(&output) && output.name[0]) {
+		format = output.name;
+	}
+	if (strcmp(lv_label_get_text(lock_badge), format) != 0) {
+		lv_label_set_text(lock_badge, format);
+	}
+	lv_obj_set_hidden(lock_badge, !format[0]);
+}
+
+// The sleeve on the card: the player's own picture, scaled down. Never kept
+// across a track change -- screensaver_release_artwork() blanks it first.
+static void lock_set_cover(const lv_image_dsc_t *cover) {
+	if (!lock_cover) {
+		return;
+	}
+	if (cover && cover->header.w) {
+		lv_image_set_src(lock_cover, cover);
+		lv_obj_set_hidden(lock_cover, false);
+		lv_obj_set_hidden(lock_note, true);
+	} else {
+		lv_image_set_src(lock_cover, NULL);
+		lv_obj_set_hidden(lock_cover, true);
+		lv_obj_set_hidden(lock_note, false);
+	}
+}
+
+static void lock_transport_cb(lv_event_t *e) {
+	if (lock_dragged) {
+		return; // the end of the swipe that unlocks, not a tap
+	}
+	int action = (int)(intptr_t)lv_event_get_user_data(e);
+	if (action < 0) {
+		player_key_prev();
+	} else if (action > 0) {
+		player_key_next();
+	} else {
+		player_key_play_pause();
+	}
+	lock_tick();
+}
+
+static lv_obj_t *lock_label(lv_obj_t *parent, const lv_font_t *font, bool dim) {
+	lv_obj_t *label = lv_label_create(parent);
+	lv_label_set_text(label, "");
+	lv_obj_add_style(label, dim ? &theme_style_text_dim : &theme_style_text, 0);
+	lv_obj_set_style_text_font(label, font, 0);
+	return label;
+}
+
+static void lock_build(void) {
+	lock = lv_obj_create(saver);
+	lv_obj_remove_style_all(lock);
+	lv_obj_add_style(lock, &theme_style_screen, 0);
+	lv_obj_set_style_bg_opa(lock, LV_OPA_COVER, 0);
+	lv_obj_set_size(lock, screen_w, screen_h);
+	lv_obj_set_pos(lock, 0, 0);
+	lv_obj_set_scrollable(lock, false);
+	lv_obj_set_clickable(lock, false); // presses reach the saver, where the swipe lives
+	lv_obj_set_hidden(lock, true);
+
+	lock_date = lock_label(lock, &font_ui_18_bold, false);
+	lv_obj_set_style_text_color(lock_date, theme()->accent, 0);
+	lv_obj_set_style_text_letter_space(lock_date, 1, 0);
+	lv_obj_set_pos(lock_date, 24, 64);
+
+	lock_clock = clocklabel_create(lock, &font_ui_120_bold, 120, &font_ui_32_bold, 32);
+	lv_obj_add_style(lock_clock, &theme_style_text, 0);
+	lv_obj_set_pos(lock_clock, 20, 88);
+
+	// The card.
+	const int pad = 16, art = 112, card_w = screen_w - 24;
+	const int card_h = pad + art + 14 + 24 + 14 + 96 + 12;
+	lv_obj_t *card = lv_obj_create(lock);
+	lv_obj_remove_style_all(card);
+	lv_obj_add_style(card, &theme_style_card, 0);
+	lv_obj_set_style_radius(card, 20, 0);
+	lv_obj_set_size(card, card_w, card_h);
+	lv_obj_align(card, LV_ALIGN_BOTTOM_MID, 0, -88);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_clickable(card, false);
+
+	lv_obj_t *box = lv_obj_create(card);
+	lv_obj_remove_style_all(box);
+	lv_obj_add_style(box, &theme_style_card_pressed, 0);
+	lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+	lv_obj_set_size(box, art, art);
+	lv_obj_set_pos(box, pad, pad);
+	lv_obj_set_style_radius(box, 10, 0);
+	lv_obj_set_style_clip_corner(box, true, 0);
+	lv_obj_set_clickable(box, false);
+	lv_obj_set_scrollable(box, false);
+	lock_note = lv_image_create(box);
+	lv_image_set_src(lock_note, &icon_music_note);
+	lv_obj_add_style(lock_note, &theme_style_icon, 0);
+	lv_obj_set_style_image_opa(lock_note, LV_OPA_30, 0);
+	lv_obj_center(lock_note);
+	lock_cover = lv_image_create(box);
+	lv_obj_set_size(lock_cover, art, art);
+	lv_image_set_inner_align(lock_cover, LV_IMAGE_ALIGN_STRETCH);
+	lv_obj_set_hidden(lock_cover, true);
+
+	int text_x = pad + art + 16, text_w = card_w - text_x - pad;
+	lv_obj_t *text = lv_obj_create(card);
+	lv_obj_remove_style_all(text);
+	lv_obj_set_size(text, text_w, art);
+	lv_obj_set_pos(text, text_x, pad);
+	lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+	lv_obj_set_style_pad_row(text, 3, 0);
+	lv_obj_set_clickable(text, false);
+	lv_obj_set_scrollable(text, false);
+	lock_title = lock_label(text, &font_ui_28_bold, false);
+	lv_obj_set_width(lock_title, text_w);
+	lv_obj_set_height(lock_title, lv_font_get_line_height(&font_ui_28_bold));
+	lv_label_set_long_mode(lock_title, LV_LABEL_LONG_DOT);
+	lock_artist = lock_label(text, &font_ui_20, true);
+	lv_obj_set_width(lock_artist, text_w);
+	lv_obj_set_height(lock_artist, lv_font_get_line_height(&font_ui_20));
+	lv_label_set_long_mode(lock_artist, LV_LABEL_LONG_DOT);
+	lock_badge = lock_label(text, &font_ui_16_bold, true);
+	lv_obj_set_style_border_width(lock_badge, 2, 0);
+	lv_obj_set_style_border_color(lock_badge, theme()->surface_pressed, 0);
+	lv_obj_set_style_radius(lock_badge, 6, 0);
+	lv_obj_set_style_pad_hor(lock_badge, 8, 0);
+	lv_obj_set_style_pad_ver(lock_badge, 2, 0);
+	lv_obj_set_style_margin_top(lock_badge, 6, 0);
+	lv_obj_set_style_max_width(lock_badge, text_w, 0);
+	lv_label_set_long_mode(lock_badge, LV_LABEL_LONG_DOT);
+
+	int y = pad + art + 14;
+	lock_elapsed = lock_label(card, &font_ui_18, true);
+	lv_obj_set_width(lock_elapsed, 60);
+	lv_obj_align(lock_elapsed, LV_ALIGN_TOP_LEFT, pad, y);
+	lock_total = lock_label(card, &font_ui_18, true);
+	lv_obj_set_width(lock_total, 60);
+	lv_obj_set_style_text_align(lock_total, LV_TEXT_ALIGN_RIGHT, 0);
+	lv_obj_align(lock_total, LV_ALIGN_TOP_RIGHT, -pad, y);
+	lock_bar = lv_bar_create(card);
+	lv_obj_remove_style_all(lock_bar);
+	lv_obj_set_size(lock_bar, card_w - 2 * pad - 2 * 66, 6);
+	lv_obj_align(lock_bar, LV_ALIGN_TOP_MID, 0, y + 9);
+	lv_bar_set_range(lock_bar, 0, 1000);
+	lv_obj_set_style_radius(lock_bar, 3, LV_PART_MAIN);
+	lv_obj_set_style_radius(lock_bar, 3, LV_PART_INDICATOR);
+	lv_obj_set_style_bg_color(lock_bar, theme()->surface_pressed, LV_PART_MAIN);
+	lv_obj_set_style_bg_opa(lock_bar, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_add_style(lock_bar, &theme_style_accent_bg, LV_PART_INDICATOR);
+	lv_obj_set_style_bg_opa(lock_bar, LV_OPA_COVER, LV_PART_INDICATOR);
+	lv_obj_set_clickable(lock_bar, false);
+
+	lv_obj_t *row = lv_obj_create(card);
+	lv_obj_remove_style_all(row);
+	lv_obj_set_size(row, card_w - 2 * pad, 96);
+	lv_obj_align(row, LV_ALIGN_TOP_MID, 0, y + 24 + 14);
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_style_pad_column(row, 28, 0);
+	lv_obj_set_clickable(row, false);
+	lv_obj_set_scrollable(row, false);
+	for (int action = -1; action <= 1; action++) {
+		lv_obj_t *button = lv_btn_create(row);
+		lv_obj_remove_style_all(button);
+		lv_obj_set_size(button, action ? 88 : 96, action ? 88 : 96);
+		lv_obj_set_style_radius(button, action ? 18 : LV_RADIUS_CIRCLE, 0);
+		lv_obj_set_style_opa(button, LV_OPA_70, LV_STATE_PRESSED);
+		// The swipe that unlocks can start on a button too.
+		lv_obj_set_event_bubble(button, true);
+		lv_obj_add_event_cb(button, lock_transport_cb, LV_EVENT_CLICKED, (void *)(intptr_t)action);
+		lv_obj_t *icon = lv_image_create(button);
+		lv_obj_center(icon);
+		lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+		if (action) {
+			lv_image_set_src(icon, action < 0 ? &icon_skip_back_large : &icon_skip_forward_large);
+			lv_obj_add_style(icon, &theme_style_icon, 0);
+		} else {
+			lv_image_set_src(icon, &icon_play_large);
+			lv_obj_add_style(icon, &theme_style_icon, 0);
+			lock_play_icon = icon;
+		}
+	}
+
+	// The way out, in words under the chevron.
+	lv_obj_t *hint = lock_label(lock, &font_ui_18, true);
+	lv_label_set_text(hint, tr("lock_swipe_up"));
+	lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -14);
+}
+
+static void refresh_clock(void) {
+	clocklabel_refresh(clock_label);
+	lock_tick();
+}
 
 // What refresh_content() last drew, so the tick below can tell an idle moment
 // from a track that changed while the screensaver was up.
@@ -343,6 +625,24 @@ static void refresh_content(void) {
 	// track change, and in Images mode a track change still has to redraw the
 	// title -- it just must not change the picture.
 	shown_cover = player_cover_image();
+
+	if (lock) {
+		bool album = source != SCREENSAVER_SOURCE_IMAGES;
+		lv_obj_set_hidden(lock, !album);
+		if (album) {
+			lv_label_set_text(lock_title, lv_label_get_text(title_label));
+			lv_label_set_text(lock_artist, lv_label_get_text(artist_label));
+			lv_image_set_src(lock_note, state.live ? &icon_radio_player : &icon_music_note);
+			lock_set_cover(shown_cover);
+			// The full-bleed picture stays down: nothing under the lock screen
+			// may point at the player's buffers.
+			lv_image_set_src(cover_img, NULL);
+			lv_obj_set_hidden(cover_img, true);
+			lv_obj_set_style_bg_image_src(info_strip, NULL, 0);
+			refresh_clock();
+			return;
+		}
+	}
 
 	if (source == SCREENSAVER_SOURCE_IMAGES) {
 		draw_from_folder();
@@ -514,6 +814,7 @@ void screensaver_release_artwork(void) {
 	lv_obj_set_style_bg_image_src(info_strip, NULL, 0);
 	lv_obj_set_style_bg_color(info_strip, lv_color_black(), 0);
 	lv_obj_set_style_bg_opa(info_strip, LV_OPA_60, 0);
+	lock_set_cover(NULL);
 }
 
 void screensaver_hide(void) {
@@ -542,6 +843,7 @@ static void drag_cb(lv_event_t *e) {
 		lv_anim_delete(saver, anim_y_cb);
 		tracking = true;
 		engaged = false;
+		lock_dragged = false;
 		return;
 	}
 	if (!tracking) {
@@ -558,6 +860,7 @@ static void drag_cb(lv_event_t *e) {
 				return; // not (yet) an upward drag
 			}
 			engaged = true;
+			lock_dragged = true;
 		}
 		// Only upward: dragging down does not pull it off the bottom.
 		lv_obj_set_y(saver, dy < 0 ? dy : 0);
@@ -673,9 +976,11 @@ void screensaver_init(gui_config_t *cfg) {
 	// does nothing, since the screensaver is only dismissed by dragging -- so it
 	// is not clickable and a finger landing on it talks to the saver underneath,
 	// where the drag gesture lives.
+	lock_build();
+
 	lv_obj_t *chevron_btn = lv_obj_create(saver);
-	lv_obj_set_size(chevron_btn, 80, 52);
-	lv_obj_align(chevron_btn, LV_ALIGN_BOTTOM_MID, 0, -4);
+	lv_obj_set_size(chevron_btn, 80, 44);
+	lv_obj_align(chevron_btn, LV_ALIGN_BOTTOM_MID, 0, -40);
 	lv_obj_set_style_bg_opa(chevron_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(chevron_btn, 0, 0);
 	lv_obj_set_style_shadow_width(chevron_btn, 0, 0);
@@ -685,7 +990,7 @@ void screensaver_init(gui_config_t *cfg) {
 
 	lv_obj_t *chevron = lv_image_create(chevron_btn);
 	lv_image_set_src(chevron, &icon_chevron_up);
-	lv_obj_set_style_image_recolor(chevron, lv_color_white(), 0);
+	lv_obj_set_style_image_recolor(chevron, theme()->text_secondary, 0);
 	lv_obj_set_style_image_recolor_opa(chevron, LV_OPA_COVER, 0);
 	lv_obj_set_style_image_opa(chevron, LV_OPA_70, 0);
 	lv_obj_center(chevron);

@@ -14,9 +14,16 @@
 #include "src/gui/library/filespage.h"
 #include "src/gui/library/music.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/nowplaying/coverloader.h"
+#include <stdlib.h>
 #include "src/gui/settings/settings.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/morepage.h"
+#include "src/gui/shell/navbar.h"
+#include "src/gui/shell/quickpanel.h"
+#include "src/gui/library/medialist.h"
+#include "src/gui/library/playlistpage.h"
+#include "src/system/library/library.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -49,7 +56,13 @@ static lv_obj_t *duration_label;
 static lv_obj_t *progress_bar;
 static lv_obj_t *transport_icon;
 static lv_obj_t *transport_buttons[3];
-static lv_obj_t *queue_label;
+static lv_obj_t *queue_label; // the format badge under the artist
+static lv_obj_t *state_label;
+static lv_obj_t *home_text_col;
+static lv_obj_t *home_progress;
+static int home_text_top, home_text_art;
+static void recent_rebuild(void);
+static void recent_poll(void);
 static lv_obj_t *mode_icon;
 static lv_obj_t *star_icon;
 static bool seeking;
@@ -77,7 +90,6 @@ static const home_app_t apps[] = {
 	{"more", &icon_menu_more, &morepage_screen, NULL, 0xAEAEB2, 0x7C7C80},
 	{"settings", &icon_menu_settings, &settings_screen, NULL, 0x8E8E93, 0x5B5B60},
 };
-static const home_app_t drawer_app = {"home_apps", &icon_apps, &main_menu_apps_screen, NULL, 0x5A5A5E, 0x2C2C2E};
 
 static bool gesture_active(void) {
 	return player_sheet_drag_active() || switcher_back_drag_active();
@@ -121,8 +133,12 @@ static void update_artwork(void) {
 	lv_obj_invalidate(artwork);
 }
 
-static void set_text_if_changed(lv_obj_t *label, const char *text) {
-	if (strcmp(lv_label_get_text(label), text) != 0) lv_label_set_text(label, text);
+static bool set_text_if_changed(lv_obj_t *label, const char *text) {
+	if (strcmp(lv_label_get_text(label), text) == 0) {
+		return false;
+	}
+	lv_label_set_text(label, text);
+	return true;
 }
 
 static void time_text(lv_obj_t *label, double seconds) {
@@ -135,11 +151,11 @@ static void time_text(lv_obj_t *label, double seconds) {
 
 // Queue position, playback mode and the star. All three are read from state
 // the player already keeps; nothing is queried from the card or the network.
-static void refresh_extras(bool track) {
-	int position = 0, count = 0;
-	char text[32] = "";
-	if (track && player_queue_position(&position, &count)) snprintf(text, sizeof(text), "%d / %d", position, count);
-	set_text_if_changed(queue_label, text);
+static bool refresh_extras(bool track) {
+	// The badge under the artist: the format, as the player words it.
+	const char *format = track ? player_format_text() : "";
+	bool changed = set_text_if_changed(queue_label, format);
+	lv_obj_set_hidden(queue_label, !format[0]);
 
 	const lv_image_dsc_t *glyph = &icon_repeat_off;
 	bool active = true;
@@ -158,6 +174,7 @@ static void refresh_extras(bool track) {
 	if (lv_image_get_src(star_icon) != star) lv_image_set_src(star_icon, star);
 	lv_obj_set_style_image_recolor(star_icon, starred ? lv_color_hex(0xFFCC00) : theme()->text_secondary, 0);
 	lv_obj_set_state(lv_obj_get_parent(star_icon), LV_STATE_DISABLED, !track);
+	return changed;
 }
 
 // Runs from the existing playback update and on entry. No additional timer
@@ -169,8 +186,9 @@ void main_menu_refresh_player(const device_state_t *state) {
 	const char *file = strrchr(state->current_file, '/');
 	const char *title = state->metadata.title;
 	if (!title[0]) title = state->current_file[0] ? (file ? file + 1 : state->current_file) : tr("player_no_track_loaded");
-	set_text_if_changed(track_title, title);
-	set_text_if_changed(track_artist, loaded ? state->metadata.artist : "");
+	bool relayout = set_text_if_changed(track_title, title);
+	relayout |= set_text_if_changed(track_artist, loaded ? state->metadata.artist : "");
+	relayout |= set_text_if_changed(state_label, !loaded ? "" : tr(state->status == AUDIO_STATUS_PLAYING ? "home_playing" : "home_paused"));
 	const lv_image_dsc_t *glyph = state->status == AUDIO_STATUS_PLAYING ? &icon_pause_large : &icon_play_large;
 	if (lv_image_get_src(transport_icon) != glyph) lv_image_set_src(transport_icon, glyph);
 	for (int i = 0; i < 3; i++) lv_obj_set_state(transport_buttons[i], LV_STATE_DISABLED, !loaded);
@@ -179,13 +197,19 @@ void main_menu_refresh_player(const device_state_t *state) {
 	if (progress < 0) progress = 0;
 	if (progress > 1000) progress = 1000;
 	if (!seeking && lv_slider_get_value(progress_bar) != progress) lv_slider_set_value(progress_bar, progress, LV_ANIM_OFF);
-	refresh_extras(loaded && !state->live);
+	relayout |= refresh_extras(loaded && !state->live);
 	time_text(elapsed_label, state->live ? 0 : state->progress_current_secs);
 	time_text(duration_label, state->live ? 0 : state->progress_total_secs);
 	lv_obj_set_hidden(progress_bar, state->live);
 	lv_obj_set_hidden(elapsed_label, state->live);
 	lv_obj_set_hidden(duration_label, state->live);
 	update_artwork();
+	if (home_text_col && relayout) {
+		lv_obj_update_layout(home_text_col);
+		int ty = home_text_top + (home_text_art - lv_obj_get_height(home_text_col)) / 2;
+		if (lv_obj_get_y(home_text_col) != ty) lv_obj_set_y(home_text_col, ty);
+	}
+	recent_poll();
 }
 
 static void refresh_snapshot(void) {
@@ -206,6 +230,7 @@ static void transport_cb(lv_event_t *event) {
 static void screen_loaded_cb(lv_event_t *event) {
 	(void)event;
 	refresh_date();
+	recent_rebuild();
 	refresh_snapshot();
 }
 
@@ -244,33 +269,53 @@ static void seek_cb(lv_event_t *event) {
 
 static void refit_home_text(void) {
 	if (!track_title) return;
-	lv_obj_set_height(track_title, lv_font_get_line_height(&font_ui_24_bold));
+	lv_obj_set_height(track_title, lv_font_get_line_height(&font_ui_28_bold));
 	lv_obj_set_height(track_artist, lv_font_get_line_height(&font_ui_20));
 }
 
-// One large Now Playing widget: the artwork, the title and artist beneath it,
-// a thin progress line and the three transport glyphs. Its height follows its
-// content, so there is no empty band whatever the screen height.
-static void make_player(lv_obj_t *screen, gui_config_t *cfg, int top, int height) {
-	const int pad = 22, below = 206; // everything under the artwork
-	int width = cfg->screen_width - 2 * cfg->padding;
-	int art = height - pad - below;
-	if (art > HOME_COVER_MAX) art = HOME_COVER_MAX;
-	if (art < 96) art = 96;
+static lv_obj_t *round_button(lv_obj_t *parent, int size, lv_event_cb_t cb, intptr_t user) {
+	lv_obj_t *button = lv_btn_create(parent);
+	lv_obj_remove_style_all(button);
+	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_size(button, size, size);
+	lv_obj_set_style_radius(button, 18, 0);
+	lv_obj_set_style_opa(button, LV_OPA_30, LV_STATE_DISABLED);
+	if (cb) lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, (void *)user);
+	player_sheet_attach_drag(button, true);
+	return button;
+}
+
+static lv_obj_t *glyph(lv_obj_t *button, const lv_image_dsc_t *src, int size) {
+	lv_obj_t *icon = lv_image_create(button);
+	lv_image_set_src(icon, src);
+	lv_obj_set_size(icon, size, size);
+	lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_add_style(icon, &theme_style_icon, 0);
+	lv_obj_center(icon);
+	return icon;
+}
+
+// The Now Playing card, as the design draws it: the artwork with a state label,
+// the title, the artist and the format badge beside it; elapsed, a thin line
+// and the length on one row; then the transport -- mode, previous, an 88 px
+// play/pause, next and the star, every one a 72 px target or more.
+// Returns the card's height.
+static int make_player(lv_obj_t *screen, gui_config_t *cfg, int top, int art) {
+	const int pad = 16;
+	int width = cfg->screen_width - 2 * 12;
 	cover_size = (unsigned)art;
 	home_cover.header.w = home_cover.header.h = (uint32_t)art;
 	home_cover.header.stride = (uint32_t)art * 2;
 	home_cover.data_size = (uint32_t)art * art * 2;
-	int spare = height - (pad + art + below);
-	height = pad + art + below;
-	if (spare > 0) top += spare / 2; // sit midway between the date and the dock
+	const int progress_h = 24, transport_h = 88, gap = 14;
+	int height = pad + art + gap + progress_h + gap + transport_h + 12;
 
 	lv_obj_t *card = lv_obj_create(screen);
 	lv_obj_remove_style_all(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
 	lv_obj_set_size(card, width, height);
 	lv_obj_align(card, LV_ALIGN_TOP_MID, 0, top);
-	lv_obj_set_style_radius(card, 32, 0);
+	lv_obj_set_style_radius(card, 20, 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_clickable(card, true);
 	lv_obj_add_event_cb(card, open_player_cb, LV_EVENT_CLICKED, NULL);
@@ -278,91 +323,357 @@ static void make_player(lv_obj_t *screen, gui_config_t *cfg, int top, int height
 
 	lv_obj_t *cover = lv_obj_create(card);
 	lv_obj_remove_style_all(cover);
-	lv_obj_add_style(cover, &theme_style_screen, 0);
+	lv_obj_add_style(cover, &theme_style_card_pressed, 0);
+	lv_obj_set_style_bg_opa(cover, LV_OPA_COVER, 0);
 	lv_obj_set_size(cover, art, art);
-	lv_obj_align(cover, LV_ALIGN_TOP_MID, 0, pad);
-	lv_obj_set_style_radius(cover, 20, 0);
-	lv_obj_set_style_clip_corner(cover, true, 0);
+	lv_obj_set_pos(cover, pad, pad);
+	lv_obj_set_style_radius(cover, 10, 0);
 	lv_obj_set_clickable(cover, false);
 	lv_obj_set_scrollable(cover, false);
+	// Rounded by the image itself (LVGL clips an image to its own radius as it
+	// draws), not by clip_corner on the frame: on an object with children that
+	// renders the frame into an offscreen layer on every redraw of it.
 	artwork = lv_image_create(cover);
+	lv_obj_set_style_radius(artwork, 10, 0);
 	lv_image_set_src(artwork, &home_cover);
 	artwork_note = lv_image_create(cover);
 	lv_image_set_src(artwork_note, &icon_music_note);
-	lv_obj_set_size(artwork_note, 72, 72);
+	lv_obj_set_size(artwork_note, art / 2, art / 2);
 	lv_image_set_inner_align(artwork_note, LV_IMAGE_ALIGN_CONTAIN);
 	lv_obj_add_style(artwork_note, &theme_style_icon, 0);
 	lv_obj_set_style_image_opa(artwork_note, LV_OPA_30, 0);
 	lv_obj_center(artwork_note);
 	lv_obj_set_hidden(artwork, true);
 
-	int y = pad + art + 16;
-	track_title = label(card, &font_ui_24_bold, false);
-	lv_obj_set_width(track_title, width - 2 * pad);
+	// State, title, artist and format, vertically centred on the artwork.
+	int text_x = pad + art + 16, text_w = width - text_x - pad;
+	lv_obj_t *text = lv_obj_create(card);
+	lv_obj_remove_style_all(text);
+	lv_obj_set_size(text, text_w, LV_SIZE_CONTENT);
+	lv_obj_set_pos(text, text_x, 0);
+	lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_style_pad_gap(text, 3, 0);
+	lv_obj_set_clickable(text, false);
+	lv_obj_set_scrollable(text, false);
+	state_label = label(text, &font_ui_16_bold, true);
+	lv_obj_set_style_text_letter_space(state_label, 1, 0);
+	lv_obj_set_style_text_opa(state_label, LV_OPA_80, 0);
+	track_title = label(text, &font_ui_28_bold, false);
+	lv_obj_set_width(track_title, text_w);
 	lv_label_set_long_mode(track_title, LV_LABEL_LONG_DOT);
-	lv_obj_set_pos(track_title, pad, y);
-	track_artist = label(card, &font_ui_20, true);
-	lv_obj_set_width(track_artist, width - 2 * pad);
+	track_artist = label(text, &font_ui_20, true);
+	lv_obj_set_width(track_artist, text_w);
 	lv_label_set_long_mode(track_artist, LV_LABEL_LONG_DOT);
-	lv_obj_set_pos(track_artist, pad, y + 34);
+	queue_label = label(text, &font_ui_16_bold, true);
+	lv_obj_set_style_border_width(queue_label, 2, 0);
+	lv_obj_set_style_border_color(queue_label, theme()->surface_pressed, 0);
+	lv_obj_set_style_radius(queue_label, 6, 0);
+	lv_obj_set_style_pad_hor(queue_label, 8, 0);
+	lv_obj_set_style_pad_ver(queue_label, 2, 0);
+	lv_obj_set_style_margin_top(queue_label, 6, 0);
+	lv_obj_set_style_max_width(queue_label, text_w, 0);
+	lv_label_set_long_mode(queue_label, LV_LABEL_LONG_DOT);
 	refit_home_text();
 	fonts_register_change(refit_home_text);
+	lv_obj_update_layout(text);
+	lv_obj_set_y(text, pad + (art - lv_obj_get_height(text)) / 2);
+	home_text_col = text;
+	home_text_top = pad;
+	home_text_art = art;
 
+	// Progress: elapsed, the line, the length -- one row, so the numbers never
+	// sit under a finger dragging the line.
+	int y = pad + art + gap;
+	elapsed_label = label(card, &font_ui_18, true);
+	lv_obj_set_width(elapsed_label, 60);
+	lv_obj_align(elapsed_label, LV_ALIGN_TOP_LEFT, pad, y);
+	duration_label = label(card, &font_ui_18, true);
+	lv_obj_set_width(duration_label, 60);
+	lv_obj_set_style_text_align(duration_label, LV_TEXT_ALIGN_RIGHT, 0);
+	lv_obj_align(duration_label, LV_ALIGN_TOP_RIGHT, -pad, y);
 	progress_bar = lv_slider_create(card);
 	lv_obj_remove_style_all(progress_bar);
 	lv_obj_set_style_bg_opa(progress_bar, LV_OPA_COVER, LV_PART_MAIN);
-	lv_obj_set_ext_click_area(progress_bar, 16);
+	lv_obj_set_ext_click_area(progress_bar, 20);
 	lv_obj_add_event_cb(progress_bar, seek_cb, LV_EVENT_ALL, NULL);
-	lv_obj_set_size(progress_bar, width - 2 * pad, 6);
-	lv_obj_set_pos(progress_bar, pad, y + 76);
+	lv_obj_set_size(progress_bar, width - 2 * pad - 2 * 66, 6);
+	lv_obj_align(progress_bar, LV_ALIGN_TOP_MID, 0, y + 9);
 	lv_obj_set_style_radius(progress_bar, 3, LV_PART_MAIN);
 	lv_obj_set_style_radius(progress_bar, 3, LV_PART_INDICATOR);
 	lv_slider_set_range(progress_bar, 0, 1000);
-	lv_obj_add_style(progress_bar, &theme_style_slider_track, LV_PART_MAIN);
-	lv_obj_set_style_bg_color(progress_bar, theme()->text_primary, LV_PART_INDICATOR);
+	lv_obj_set_style_bg_color(progress_bar, theme()->surface_pressed, LV_PART_MAIN);
+	lv_obj_add_style(progress_bar, &theme_style_accent_bg, LV_PART_INDICATOR);
 	lv_obj_set_style_bg_opa(progress_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-	elapsed_label = label(card, &font_ui_16, true);
-	duration_label = label(card, &font_ui_16, true);
-	lv_obj_set_pos(elapsed_label, pad, y + 88);
-	lv_obj_align(duration_label, LV_ALIGN_TOP_RIGHT, -pad, y + 88);
-	queue_label = label(card, &font_ui_16, true);
-	lv_obj_align(queue_label, LV_ALIGN_TOP_MID, 0, y + 88);
+	home_progress = progress_bar;
+
+	// Transport.
+	lv_obj_t *row = lv_obj_create(card);
+	lv_obj_remove_style_all(row);
+	lv_obj_set_size(row, width - 2 * pad, transport_h);
+	lv_obj_align(row, LV_ALIGN_TOP_MID, 0, y + progress_h + gap);
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_clickable(row, false);
+	lv_obj_set_scrollable(row, false);
+
+	lv_obj_t *mode = round_button(row, 72, extra_cb, 0);
+	mode_icon = glyph(mode, &icon_repeat_off, 30);
+	lv_obj_remove_style(mode_icon, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(mode_icon, LV_OPA_COVER, 0);
 	for (int action = -1; action <= 1; action++) {
-		lv_obj_t *button = lv_btn_create(card);
-		lv_obj_remove_style_all(button);
-		lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_size(button, 80, 64);
-		lv_obj_set_style_radius(button, 20, 0);
-		lv_obj_set_style_opa(button, LV_OPA_30, LV_STATE_DISABLED);
-		lv_obj_align(button, LV_ALIGN_BOTTOM_MID, action * 92, -12);
-		lv_obj_add_event_cb(button, transport_cb, LV_EVENT_CLICKED, (void *)(intptr_t)action);
-		player_sheet_attach_drag(button, true);
-		lv_obj_t *icon = lv_image_create(button);
-		lv_image_set_src(icon, action < 0 ? &icon_skip_back_large : action > 0 ? &icon_skip_forward_large : &icon_play_large);
-		lv_obj_add_style(icon, &theme_style_icon, 0);
-		lv_obj_center(icon);
+		lv_obj_t *button = round_button(row, action ? 72 : 88, transport_cb, action);
+		lv_obj_t *icon;
+		if (action) {
+			icon = glyph(button, action < 0 ? &icon_skip_back_large : &icon_skip_forward_large, 44);
+		} else {
+			lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+			lv_obj_add_style(button, &theme_style_accent_bg, 0);
+			lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+			icon = glyph(button, &icon_play_large, 44);
+			lv_obj_remove_style(icon, &theme_style_icon, 0);
+			lv_obj_add_style(icon, &theme_style_accent_bg, 0);
+			lv_obj_set_style_bg_opa(icon, LV_OPA_TRANSP, 0);
+			lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+			transport_icon = icon;
+		}
 		transport_buttons[action + 1] = button;
-		if (!action) transport_icon = icon;
 	}
-	// Playback mode on the left of the transport, the star on the right.
-	for (int side = 0; side < 2; side++) {
-		lv_obj_t *button = lv_btn_create(card);
-		lv_obj_remove_style_all(button);
-		lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_size(button, 56, 56);
-		lv_obj_set_style_radius(button, 18, 0);
-		lv_obj_set_style_opa(button, LV_OPA_30, LV_STATE_DISABLED);
-		lv_obj_align(button, side ? LV_ALIGN_BOTTOM_RIGHT : LV_ALIGN_BOTTOM_LEFT, side ? -pad + 10 : pad - 10, -16);
-		lv_obj_add_event_cb(button, extra_cb, LV_EVENT_CLICKED, (void *)(intptr_t)side);
-		player_sheet_attach_drag(button, true);
-		lv_obj_t *icon = lv_image_create(button);
-		lv_image_set_src(icon, side ? &icon_star : &icon_repeat_off);
-		lv_obj_set_size(icon, 28, 28);
-		lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CONTAIN);
-		lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
-		lv_obj_center(icon);
-		if (side) star_icon = icon;
-		else mode_icon = icon;
+	lv_obj_t *star = round_button(row, 72, extra_cb, 1);
+	star_icon = glyph(star, &icon_star, 30);
+	lv_obj_remove_style(star_icon, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(star_icon, LV_OPA_COVER, 0);
+	return height;
+}
+
+static void open_albums(void) { medialist_open(tr("albums"), LIBRARY_LIST_ALBUMS, LIBRARY_FILTER_NONE, NULL); }
+
+// ---------------------------------------------------------------------------
+// Jump back in: the three records played most recently, newest first, topped
+// up from the head of the album list on a player with no history yet. Covers
+// come from the worker, never from this thread, and are asked for once per
+// visit; the list is rebuilt only when the history has grown.
+// ---------------------------------------------------------------------------
+
+#define RECENT_COUNT 3
+#define RECENT_SIZE 144
+#define RECENT_SLOT_BASE 108 // coverloader.h: the home screen's three
+
+typedef struct {
+	lv_obj_t *tile;
+	lv_obj_t *box;
+	lv_obj_t *image;
+	lv_obj_t *note;
+	lv_obj_t *title;
+	lv_obj_t *artist;
+	cover_image_t cover;
+	char value[256]; // the album, as medialist_open() takes it
+	char path[512];	 // a track of it, to take the cover from
+	bool waiting;
+} recent_t;
+
+static recent_t recents[RECENT_COUNT];
+static int recent_filled;
+static long long recent_revision = -1;
+static lv_obj_t *recent_head;
+
+static bool recent_has(const char *value) {
+	for (int i = 0; i < recent_filled; i++) {
+		if (library_album_same(recents[i].value, value)) return true;
+	}
+	return false;
+}
+
+static void recent_add(const char *value, const char *path) {
+	if (recent_filled >= RECENT_COUNT || !value[0] || recent_has(value)) return;
+	recent_t *r = &recents[recent_filled++];
+	snprintf(r->value, sizeof(r->value), "%s", value);
+	snprintf(r->path, sizeof(r->path), "%s", path);
+}
+
+static bool recent_album_row(const char *name, const char *path, const char *artist, void *user) {
+	(void)artist;
+	(void)user;
+	char value[256];
+	if (path && path[0] && library_track_album_value(path, value, sizeof(value))) recent_add(value, path);
+	else if (name && path) recent_add(name, path);
+	return recent_filled < RECENT_COUNT;
+}
+
+// Collects the three covers as soon as the worker has them, rather than on the
+// playback snapshot's next tick (which is slow, and slower while paused). Runs
+// only while one is still coming.
+static lv_timer_t *recent_timer;
+
+static void recent_timer_cb(lv_timer_t *timer) {
+	recent_poll();
+	bool waiting = false;
+	for (int i = 0; i < recent_filled; i++) {
+		waiting = waiting || recents[i].waiting;
+	}
+	if (!waiting) {
+		lv_timer_pause(timer);
+	}
+}
+
+static void recent_timer_kick(void) {
+	if (!recent_timer) {
+		recent_timer = lv_timer_create(recent_timer_cb, 60, NULL);
+	} else {
+		lv_timer_resume(recent_timer);
+	}
+}
+
+static void recent_paint(void) {
+	for (int i = 0; i < RECENT_COUNT; i++) {
+		recent_t *r = &recents[i];
+		bool used = i < recent_filled;
+		lv_obj_set_hidden(r->tile, !used);
+		if (!used) continue;
+		char title[256] = "", artist[256] = "";
+		library_album_title(r->value, title, sizeof(title));
+		library_album_artist(r->value, artist, sizeof(artist));
+		lv_label_set_text(r->title, title);
+		lv_label_set_text(r->artist, artist);
+		lv_obj_set_hidden(r->image, true);
+		lv_obj_set_hidden(r->note, false);
+		lv_image_set_src(r->image, NULL);
+		cover_free(&r->cover);
+		coverloader_request(RECENT_SLOT_BASE + i, r->path, RECENT_SIZE);
+		r->waiting = true;
+	}
+	recent_timer_kick();
+	if (recent_head) lv_obj_set_hidden(recent_head, recent_filled == 0);
+}
+
+static void recent_rebuild(void) {
+	if (!recents[0].tile) return;
+	long long revision = library_history_revision();
+	if (revision == recent_revision && recent_filled > 0) return;
+	recent_revision = revision;
+	recent_filled = 0;
+
+	library_history_item_t *items = NULL;
+	int count = library_history_items(&items);
+	for (int i = count - 1; i >= 0 && recent_filled < RECENT_COUNT && i >= count - 60; i--) {
+		char path[512], name[8], value[256];
+		if (library_history_entry(items[i].id, path, sizeof(path), name, sizeof(name)) &&
+			library_track_album_value(path, value, sizeof(value))) {
+			recent_add(value, path);
+		}
+	}
+	free(items);
+	if (recent_filled < RECENT_COUNT) {
+		library_index_t *ix = library_index_open(LIBRARY_LIST_ALBUMS, LIBRARY_FILTER_NONE, NULL, LIBRARY_ORDER_DEFAULT, false);
+		if (ix) {
+			library_index_window(ix, 0, 12, recent_album_row, NULL);
+			library_index_close(ix);
+		}
+	}
+	recent_paint();
+}
+
+// Collects whatever the worker has finished. Called from the playback
+// snapshot, which already runs while this page is the one on screen.
+static void recent_poll(void) {
+	for (int i = 0; i < recent_filled; i++) {
+		recent_t *r = &recents[i];
+		if (!r->waiting) continue;
+		cover_image_t got = {0};
+		bool finished = false;
+		if (coverloader_take(RECENT_SLOT_BASE + i, &got, &finished)) {
+			cover_free(&r->cover);
+			r->cover = got;
+			lv_image_set_src(r->image, &r->cover.dsc);
+			lv_obj_set_hidden(r->image, false);
+			lv_obj_set_hidden(r->note, true);
+			r->waiting = false;
+		} else if (finished) {
+			r->waiting = false;
+		}
+	}
+}
+
+static void recent_cb(lv_event_t *event) {
+	if (gesture_active()) return;
+	recent_t *r = lv_event_get_user_data(event);
+	char title[256] = "";
+	library_album_title(r->value, title, sizeof(title));
+	medialist_open(title, LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ALBUM, r->value);
+}
+
+static void all_albums_cb(lv_event_t *event) {
+	(void)event;
+	if (!gesture_active()) open_albums();
+}
+
+static void make_recent(lv_obj_t *screen, gui_config_t *cfg, int top) {
+	// The section row: the label, and the way into every album.
+	lv_obj_t *head = lv_obj_create(screen);
+	lv_obj_remove_style_all(head);
+	lv_obj_set_size(head, cfg->screen_width - 2 * 12, 56);
+	lv_obj_set_pos(head, 12, top);
+	lv_obj_set_scrollable(head, false);
+	lv_obj_set_clickable(head, false);
+	recent_head = head;
+	lv_obj_t *name = label(head, &font_ui_16_bold, true);
+	lv_label_set_text(name, tr("home_jump_back_in"));
+	lv_obj_set_style_text_letter_space(name, 1, 0);
+	lv_obj_set_style_text_opa(name, LV_OPA_80, 0);
+	lv_obj_align(name, LV_ALIGN_LEFT_MID, 8, 0);
+	lv_obj_t *all = lv_btn_create(head);
+	lv_obj_remove_style_all(all);
+	lv_obj_set_size(all, LV_SIZE_CONTENT, 56);
+	lv_obj_set_style_pad_hor(all, 8, 0);
+	lv_obj_align(all, LV_ALIGN_RIGHT_MID, 0, 0);
+	lv_obj_add_event_cb(all, all_albums_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *all_text = label(all, &font_ui_18_bold, true);
+	lv_label_set_text(all_text, tr("home_all_albums"));
+	lv_obj_center(all_text);
+
+	int gap = 12;
+	int w = (cfg->screen_width - 2 * 12 - 2 * gap) / 3;
+	for (int i = 0; i < RECENT_COUNT; i++) {
+		recent_t *r = &recents[i];
+		lv_obj_t *tile = lv_btn_create(screen);
+		lv_obj_remove_style_all(tile);
+		lv_obj_set_size(tile, w, w + 60);
+		lv_obj_set_pos(tile, 12 + i * (w + gap), top + 56);
+		lv_obj_set_scrollable(tile, false);
+		lv_obj_set_style_opa(tile, LV_OPA_70, LV_STATE_PRESSED);
+		lv_obj_add_event_cb(tile, recent_cb, LV_EVENT_CLICKED, r);
+		player_sheet_attach_drag(tile, true);
+		r->tile = tile;
+
+		lv_obj_t *box = lv_obj_create(tile);
+		lv_obj_remove_style_all(box);
+		lv_obj_add_style(box, &theme_style_card, 0);
+		lv_obj_set_size(box, w, w);
+		lv_obj_set_style_radius(box, 10, 0); // the picture rounds itself: see the card's cover
+		lv_obj_set_clickable(box, false);
+		lv_obj_set_scrollable(box, false);
+		r->box = box;
+		r->note = lv_image_create(box);
+		lv_image_set_src(r->note, &icon_music_note);
+		lv_obj_add_style(r->note, &theme_style_icon, 0);
+		lv_obj_set_style_image_opa(r->note, LV_OPA_30, 0);
+		lv_obj_center(r->note);
+		r->image = lv_image_create(box);
+		lv_obj_set_size(r->image, w, w);
+		lv_obj_set_style_radius(r->image, 10, 0);
+		lv_image_set_inner_align(r->image, LV_IMAGE_ALIGN_STRETCH);
+		lv_obj_set_hidden(r->image, true);
+
+		r->title = label(tile, &font_ui_20, false);
+		lv_obj_set_width(r->title, w);
+		lv_obj_set_height(r->title, lv_font_get_line_height(&font_ui_20));
+		lv_label_set_long_mode(r->title, LV_LABEL_LONG_DOT);
+		lv_obj_set_pos(r->title, 0, w + 6);
+		r->artist = label(tile, &font_ui_16, true);
+		lv_obj_set_width(r->artist, w);
+		lv_obj_set_height(r->artist, lv_font_get_line_height(&font_ui_16));
+		lv_label_set_long_mode(r->artist, LV_LABEL_LONG_DOT);
+		lv_obj_set_pos(r->artist, 0, w + 8 + lv_font_get_line_height(&font_ui_20));
+		lv_obj_set_hidden(tile, true);
 	}
 }
 
@@ -478,38 +789,38 @@ static void make_drawer(gui_config_t *cfg) {
 	lv_obj_add_event_cb(main_menu_apps_screen, drawer_motion_cb, LV_EVENT_SCREEN_UNLOADED, grid);
 }
 
+static void control_centre_cb(lv_event_t *event) {
+	(void)event;
+	if (!gesture_active()) quickpanel_open();
+}
+
 void main_menu_init(gui_config_t *cfg) {
 	lv_obj_add_style(main_menu_screen, &theme_style_screen, 0);
 	lv_obj_set_scrollable(main_menu_screen, false);
-	weekday_label = label(main_menu_screen, &font_ui_18, false);
+
+	// Header: the day and date, and the control centre in the corner.
+	const int header_h = 84;
+	int y = cfg->top_bar_height;
+	weekday_label = label(main_menu_screen, &font_ui_16_bold, false);
+	lv_obj_add_style(weekday_label, &theme_style_nav_icon, 0);
 	lv_obj_set_style_text_color(weekday_label, theme()->accent, 0);
 	lv_obj_set_style_text_letter_space(weekday_label, 1, 0);
-	lv_obj_align(weekday_label, LV_ALIGN_TOP_LEFT, cfg->padding + 10, cfg->top_bar_height + 14);
-	date_label = label(main_menu_screen, &font_ui_36_bold, false);
-	lv_obj_align(date_label, LV_ALIGN_TOP_LEFT, cfg->padding + 10, cfg->top_bar_height + 36);
+	lv_obj_align(weekday_label, LV_ALIGN_TOP_LEFT, 20, y + 12);
+	date_label = label(main_menu_screen, &font_ui_32_bold, false);
+	lv_obj_align(date_label, LV_ALIGN_TOP_LEFT, 20, y + 34);
+	lv_obj_t *cc = round_button(main_menu_screen, 72, NULL, 0);
+	lv_obj_add_event_cb(cc, control_centre_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_align(cc, LV_ALIGN_TOP_RIGHT, -8, y + 6);
+	glyph(cc, &icon_sliders, 34);
+	y += header_h;
 
-	// Date, one widget, the dock.
-	const int dock_height = 100;
-	int card_top = cfg->top_bar_height + 96;
-	int dock_top = cfg->screen_height - cfg->padding - dock_height;
-	make_player(main_menu_screen, cfg, card_top, dock_top - 16 - card_top);
+	int tabs = navbar_attach(main_menu_screen, cfg, NAVBAR_HOME, false);
+	int bottom = cfg->screen_height - tabs - 12;
+
+	(void)bottom;
+	int card_h = make_player(main_menu_screen, cfg, y, 124);
+	make_recent(main_menu_screen, cfg, y + card_h);
+
 	make_drawer(cfg);
-	// The dock is one quiet bar holding the four everyday destinations.
-	lv_obj_t *dock = lv_obj_create(main_menu_screen);
-	lv_obj_remove_style_all(dock);
-	lv_obj_add_style(dock, &theme_style_card, 0);
-	lv_obj_set_size(dock, cfg->screen_width - 2 * cfg->padding, 100);
-	lv_obj_set_style_radius(dock, 32, 0);
-	lv_obj_set_style_pad_hor(dock, 18, 0);
-	lv_obj_align(dock, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding);
-	lv_obj_set_flex_flow(dock, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(dock, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_scrollable(dock, false);
-	int width = (cfg->screen_width - 2 * cfg->padding - 36) / 4;
-	make_app(dock, &apps[0], width, true);
-	make_app(dock, &apps[1], width, true);
-	make_app(dock, &apps[8], width, true);
-	make_app(dock, &drawer_app, width, true);
-	player_sheet_attach_drag(dock, true);
 	lv_obj_add_event_cb(main_menu_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }

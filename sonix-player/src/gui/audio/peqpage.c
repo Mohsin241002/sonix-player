@@ -1,4 +1,5 @@
 #include "peqpage.h"
+#include "src/gui/settings/musicsettings.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1044,7 +1045,8 @@ static void refresh_theme(void) {
 
 void peqpage_init(gui_config_t *cfg) {
 	main_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(main_screen, cfg, "peq");
+	lv_obj_t *container = settingsrow_playback_page(main_screen, cfg, "nav_sound");
+	musicsettings_sound_tabs(main_screen, container, cfg, 1);
 
 	// Reset, AutoEq search and the preset gear share the title's corner slots.
 	settingsrow_title_corner_slots(settingsrow_page_title(main_screen), cfg, 3);
@@ -1057,7 +1059,7 @@ void peqpage_init(gui_config_t *cfg) {
 	peqsettings_set_reload_cb(reload_after_preset);
 	peqautoeq_set_reload_cb(reload_after_preset);
 
-	settingsrow_toggle(container, "on", &enable_switch, enable_cb);
+	settingsrow_toggle(container, "peq", &enable_switch, enable_cb);
 	if (peq_get_enabled()) {
 		lv_obj_add_state(enable_switch, LV_STATE_CHECKED);
 	}

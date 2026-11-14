@@ -310,7 +310,7 @@ static void build_password_panel(gui_config_t *cfg) {
 	lv_label_set_long_mode(pw_title, LV_LABEL_LONG_DOT);
 	lv_obj_set_width(pw_title, cfg->screen_width - 2 * cfg->padding - HEADER_BTN - 14);
 	lv_obj_add_style(pw_title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(pw_title, &font_ui_32, 0);
+	lv_obj_set_style_text_font(pw_title, &font_ui_32_bold, 0);
 	lv_obj_align(pw_title, LV_ALIGN_TOP_LEFT, cfg->padding + HEADER_BTN + 14, cfg->padding + (HEADER_BTN - lv_font_get_line_height(&font_ui_32)) / 2);
 
 	int top = cfg->padding + HEADER_BTN + cfg->padding;
@@ -349,7 +349,7 @@ void setupwifi_init(gui_config_t *cfg) {
 	lv_obj_t *title = lv_label_create(panel);
 	lv_label_set_text(title, tr("setupwifi_title"));
 	lv_obj_add_style(title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(title, &font_ui_32, 0);
+	lv_obj_set_style_text_font(title, &font_ui_32_bold, 0);
 
 	lv_obj_t *note = lv_label_create(panel);
 	lv_label_set_text(note, tr("setupwifi_note"));

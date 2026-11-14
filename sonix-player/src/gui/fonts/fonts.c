@@ -125,6 +125,12 @@ lv_font_t font_ui_26;
 lv_font_t font_ui_28;
 lv_font_t font_ui_32;
 lv_font_t font_ui_36_bold;
+lv_font_t font_ui_16_bold;
+lv_font_t font_ui_18_bold;
+lv_font_t font_ui_28_bold;
+lv_font_t font_ui_32_bold;
+lv_font_t font_ui_38_bold;
+lv_font_t font_ui_120_bold;
 lv_font_t font_ui_44_bold;
 lv_font_t font_ui_64_bold;
 lv_font_t font_ui_72;
@@ -141,6 +147,8 @@ static const ui_font_t ui_fonts[] = {
 	{&font_ui_26, 26, false}, {&font_ui_28, 28, false}, {&font_ui_32, 32, false},
 	{&font_ui_72, 72, false}, {&font_ui_20_bold, 20, true}, {&font_ui_22_bold, 22, true}, {&font_ui_24_bold, 24, true}, {&font_ui_36_bold, 36, true},
 	{&font_ui_44_bold, 44, true}, {&font_ui_64_bold, 64, true},
+	{&font_ui_16_bold, 16, true}, {&font_ui_18_bold, 18, true}, {&font_ui_28_bold, 28, true},
+	{&font_ui_32_bold, 32, true}, {&font_ui_38_bold, 38, true}, {&font_ui_120_bold, 120, true},
 };
 
 #define UI_FONT_COUNT (sizeof(ui_fonts) / sizeof(ui_fonts[0]))

@@ -15,6 +15,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/shell/navbar.h"
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/library/playlistpage.h"
@@ -37,12 +38,20 @@ lv_obj_t *medialist_tracks_screen;
 lv_obj_t *medialist_albums_screen;
 
 // The exact geometry of the file browser's rows, so the two lists are twins.
-#define ROW_HEIGHT 100
-#define ROW_GAP 8
+// Two lines (title, then artist) in 84 px: still a 7 mm target on the R1.
+#define ROW_HEIGHT 84
+#define ROW_GAP 4
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
 #define ROW_RADIUS 12
 #define ROW_PAD 14
-#define THUMB_SIZE 72
+#define THUMB_SIZE 60
+
+// The Albums list as a grid: two covers to a row, each with its title and
+// artist under it. The whole tile is the target.
+#define GRID_GAP 12
+// Every list page keeps the mini-player along its foot.
+#define MINI_H NAVBAR_MINI_HEIGHT
+#define GRID_TEXT_H 62 // under the cover: the title and the artist
 #define QUALITY_GAP 4 // between a title and the badge under it
 #define ROW_POOL 12
 
@@ -83,7 +92,7 @@ lv_obj_t *medialist_albums_screen;
 #define CORNER_MAX_BUTTONS 4
 
 // How often finished artwork is collected while any is pending.
-#define THUMB_POLL_MS 150
+#define THUMB_POLL_MS 60 // only while art is pending: a cover shows within a frame or four of being ready
 #define HEAD_POLL_MS 30
 
 // The bin's red disc in selection mode.
@@ -104,7 +113,7 @@ lv_obj_t *medialist_albums_screen;
 // The head an album's page opens with in the alternative layout: the cover as
 // large as the width allows, and under it the title, the artist, the genre and
 // the year. It scrolls away with the rows.
-#define HEAD_COVER_SIZE 300
+#define HEAD_COVER_SIZE 168
 #define HEAD_GAP 24		// between the head and the first row (or heading)
 #define HEAD_TITLE_LINES 2
 // The three ways to start the record, in a row under the year: shuffle, play
@@ -112,7 +121,7 @@ lv_obj_t *medialist_albums_screen;
 // other lists, out where the thumb is. Play is a filled pill with its name on
 // it, the other two bare glyphs either side.
 #define HEAD_BTN_SIDE 56
-#define HEAD_PLAY_HEIGHT 56
+#define HEAD_PLAY_HEIGHT 72
 #define HEAD_PLAY_PAD 40 // what the pill keeps either side of its word
 #define HEAD_BTN_GAP 20
 
@@ -159,6 +168,7 @@ lv_obj_t *medialist_albums_screen;
 #define INDEX_BUCKETS LIBRARY_INDEX_BUCKETS
 #define INDEX_PAST_Z_SLOT LIBRARY_INDEX_PAST_Z_SLOT
 #define INDEX_BAR_WIDTH 28
+#define INDEX_RAIL_RESERVE 22 // what a list's rows give up to the rail beside them
 #define INDEX_HIDE_MS 2500	// no scrolling and no touch for this long: it goes
 #define INDEX_HINT_MS 450	// the big letter outstays the finger by a moment
 #define INDEX_MIN_ROWS 30	// shorter lists are quicker to just scroll
@@ -201,6 +211,7 @@ typedef struct {
 	bool thumb_settled;
 	cover_image_t thumb;
 	char thumb_path[512]; // the file the picture, or the request for it, is of
+	bool grid; // laid out as a cover tile (the Albums grid) rather than a row
 } row_t;
 
 // A list a panel showed before the one on it now, kept so the step back can
@@ -250,6 +261,7 @@ typedef struct {
 	winrow_t *window; // WINDOW_ROWS of them, allocated once with the panel
 	int window_first; // index of window[0]; -1 when nothing is cached
 	int window_count;
+	int warm_mark; // 1 + the last row whose followers were sent to be warmed; 0 for none
 
 	// Path-backed lists only, with a count of its own: p->count below is the
 	// length of the LIST, which for a query-backed one comes from the handle
@@ -322,6 +334,7 @@ typedef struct {
 	uint16_t *disc_no;	  // ...and which disc that row begins
 	lv_obj_t **disc_heads; // ...and the heading above it
 	int disc_count;
+	int mini_h; // the mini-player along the foot of the page
 	uint16_t *track_no;	  // each row's track number, in the head layout; NULL otherwise
 
 	// The A-Z strip down the right edge and the letter it shows in the middle
@@ -334,6 +347,9 @@ typedef struct {
 	lv_obj_t *index_hint_label;
 	int index_row[INDEX_BUCKETS];
 	bool index_enabled; // this list is one the strip makes sense on
+	int index_marked;	// the slot of the strip lit as the one on screen, or -1
+	bool letter_heads;	// the headings in disc_heads are the alphabet's, not an album's discs
+	lv_obj_t *chips;	// the row of chips above a list of tracks
 	bool index_desc;	// the list runs Z-A, so the strip does too
 	uint32_t index_wanted_at;
 	uint32_t index_hint_at;
@@ -439,7 +455,8 @@ static void load_view_settings(void) {
 	view_settings_loaded = true;
 	album_view = config_get_int("library", "album_view", 1) != 0;
 	quality_badges = config_get_int("library", "quality_badges", 0) != 0;
-	show_artist = config_get_int("library", "show_artist", 0) != 0;
+	// On unless turned off: a title alone does not say which "Intro" it is.
+	show_artist = config_get_int("library", "show_artist", 1) != 0;
 	go_to_current = config_get_int("library", "go_to_current", 0) != 0;
 	album_head = config_get_int("library", "album_head", 0) != 0;
 	allow_delete = config_get_int("library", "allow_delete", 0) != 0;
@@ -581,6 +598,7 @@ static void model_clear(panel_t *p) {
 	p->ix = NULL;
 	p->window_first = -1;
 	p->window_count = 0;
+	p->warm_mark = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -596,6 +614,9 @@ static void index_rebuild(panel_t *p, bool enabled, bool descending);
 static void row_drop_thumb(panel_t *p, row_t *row);
 static void album_places_load(panel_t *p);
 static bool panel_is_album(const panel_t *p);
+static void disc_heads_clear(panel_t *p);
+static void disc_heads_place(panel_t *p);
+static void index_mark_current(panel_t *p);
 static bool head_poll(panel_t *p);
 static bool head_from_player(panel_t *p, const char *first_path);
 static int body_height(const panel_t *p);
@@ -636,6 +657,7 @@ static void panel_refresh_stale(panel_t *p) {
 	p->count = library_index_count(fresh);
 	p->window_first = -1;
 	p->window_count = 0;
+	p->warm_mark = 0;
 
 	// The rows underneath may have moved, so every pooled row has to be bound
 	// again, and the letters have to be counted again. A row that comes back
@@ -806,7 +828,19 @@ static int disc_heads_through(const panel_t *p, int index) {
 
 // The top of row `index` on the page. `index` may be p->count: the end of the
 // last row, gap included.
+static int grid_tile_w(const panel_t *p) {
+	return ((int)p->cfg->screen_width - 2 * (int)p->cfg->padding - GRID_GAP) / 2;
+}
+static int grid_pitch(const panel_t *p) { return grid_tile_w(p) + GRID_TEXT_H + GRID_GAP; }
+
+static bool panel_is_grid(const panel_t *p) {
+	return !p->is_tracks && p->kind == LIBRARY_LIST_ALBUMS && p->disc_count == 0 && !p->from_paths;
+}
+
 static int row_y(const panel_t *p, int index) {
+	if (panel_is_grid(p)) {
+		return p->head_height + (index / 2) * grid_pitch(p);
+	}
 	return p->head_height + index * ROW_PITCH + disc_heads_through(p, index) * DISC_HEAD_PITCH;
 }
 
@@ -817,7 +851,9 @@ static int row_at_y(const panel_t *p, int y) {
 		return 0;
 	}
 	int index;
-	if (p->disc_count == 0) {
+	if (panel_is_grid(p)) {
+		index = y < p->head_height ? 0 : (y - p->head_height) / grid_pitch(p) * 2;
+	} else if (p->disc_count == 0) {
 		index = y < p->head_height ? 0 : (y - p->head_height) / ROW_PITCH;
 	} else {
 		int lo = 0;
@@ -836,7 +872,12 @@ static int row_at_y(const panel_t *p, int y) {
 }
 
 // The height of everything the list scrolls over.
-static int body_height(const panel_t *p) { return p->count > 0 ? row_y(p, p->count) : p->head_height + ROW_PITCH; }
+static int body_height(const panel_t *p) {
+	if (panel_is_grid(p) && p->count > 0) {
+		return row_y(p, p->count + (p->count & 1));
+	}
+	return p->count > 0 ? row_y(p, p->count) : p->head_height + ROW_PITCH;
+}
 
 // One album's tracks, read from the index: the one list that can have a head
 // and disc headings.
@@ -1751,8 +1792,66 @@ static void sel_delete_cb(lv_event_t *e) {
 	confirm_show("medialist_delete_tracks_question", message, "delete", delete_confirmed, NULL);
 }
 
+// Lays a row out as a list row or as a grid tile. Only does the work when the
+// shape changes: the same pool serves Albums and then Artists in turn.
+static void row_set_grid(panel_t *p, row_t *row, bool grid) {
+	if (row->grid == grid) {
+		return;
+	}
+	row->grid = grid;
+	row_drop_thumb(p, row); // the picture was made at the other size
+	int full = (int)p->cfg->screen_width - 2 * (int)p->cfg->padding;
+	if (grid) {
+		int w = grid_tile_w(p);
+		lv_obj_set_size(row->button, w, w + GRID_TEXT_H);
+		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_COLUMN);
+		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+		lv_obj_set_style_pad_all(row->button, 0, 0);
+		lv_obj_set_style_bg_opa(row->button, LV_OPA_TRANSP, 0);
+		lv_obj_set_size(row->icon, w, w);
+		lv_obj_set_style_radius(row->icon, 12, 0);
+		// A tile without artwork shows the album glyph on a surface, not
+		// floating on the page.
+		lv_obj_add_style(row->icon, &theme_style_card, 0);
+		lv_obj_set_style_clip_corner(row->icon, true, 0);
+		lv_obj_set_width(row->text, lv_pct(100));
+		lv_obj_set_flex_grow(row->text, 0);
+		lv_obj_set_style_pad_top(row->text, 8, 0);
+		lv_obj_set_style_text_font(row->label, &font_ui_22, 0);
+		lv_obj_set_height(row->label, lv_font_get_line_height(&font_ui_22));
+		lv_obj_set_style_text_font(row->artist, &font_ui_18, 0);
+		lv_obj_set_height(row->artist, lv_font_get_line_height(&font_ui_18));
+		if (row->chevron) {
+			lv_obj_set_hidden(row->chevron, true);
+		}
+	} else {
+		lv_obj_set_size(row->button, full, ROW_HEIGHT);
+		lv_obj_set_x(row->button, 0);
+		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
+		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+		lv_obj_remove_local_style_prop(row->button, LV_STYLE_PAD_TOP, 0);
+		lv_obj_remove_local_style_prop(row->button, LV_STYLE_PAD_BOTTOM, 0);
+		lv_obj_remove_local_style_prop(row->button, LV_STYLE_PAD_LEFT, 0);
+		lv_obj_remove_local_style_prop(row->button, LV_STYLE_PAD_RIGHT, 0);
+		lv_obj_remove_local_style_prop(row->button, LV_STYLE_BG_OPA, 0);
+		lv_obj_set_size(row->icon, THUMB_SIZE, THUMB_SIZE);
+		lv_obj_set_style_radius(row->icon, 0, 0);
+		lv_obj_remove_style(row->icon, &theme_style_card, 0);
+		lv_obj_set_style_clip_corner(row->icon, false, 0);
+		lv_obj_set_flex_grow(row->text, 1);
+		lv_obj_set_style_pad_top(row->text, 0, 0);
+		lv_obj_set_style_text_font(row->label, &font_ui_24, 0);
+		lv_obj_set_height(row->label, lv_font_get_line_height(&font_ui_24));
+		lv_obj_set_style_text_font(row->artist, &font_ui_20, 0);
+		lv_obj_set_height(row->artist, lv_font_get_line_height(&font_ui_20));
+		if (row->chevron) {
+			lv_obj_set_hidden(row->chevron, false);
+		}
+	}
+}
+
 static void row_bind(panel_t *p, row_t *row, int index) {
-	if (row->index == index) {
+	if (row->index == index && row->grid == panel_is_grid(p)) {
 		return;
 	}
 
@@ -1777,7 +1876,19 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 	}
 
 	lv_obj_set_hidden(row->button, false);
-	lv_obj_set_y(row->button, row_y(p, index));
+	row_set_grid(p, row, panel_is_grid(p));
+	if (!row->grid) {
+		// A list with the A-Z rail keeps its rows clear of it.
+		int w = (int)p->cfg->screen_width - 2 * (int)p->cfg->padding - (p->index_enabled ? INDEX_RAIL_RESERVE : 0);
+		if (lv_obj_get_style_width(row->button, 0) != w) {
+			lv_obj_set_width(row->button, w);
+		}
+	}
+	if (row->grid) {
+		lv_obj_set_pos(row->button, (index & 1) * (grid_tile_w(p) + GRID_GAP), row_y(p, index));
+	} else {
+		lv_obj_set_y(row->button, row_y(p, index));
+	}
 	// An album row is named by its value -- name and key, see library.h -- and
 	// only the name is for reading.
 	char shown[sizeof(((winrow_t *)0)->name)];
@@ -1811,6 +1922,55 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 	row_update_playmark(p, row);
 	row_update_detail(p, row, index, path);
 	row_update_selection(p, row, name, path);
+}
+
+// Once the rows on screen have their covers: the rows just past them are sent
+// to be decoded into the disk cache, so that scrolling on finds them there --
+// a read of a few kilobytes instead of a JPEG decode. Only rows already in the
+// window the list holds in memory: nothing here reads the database.
+#define WARM_AHEAD 16
+#define WARM_BEHIND 4
+
+static void warm_one(panel_t *p, int index, int size) {
+	if (index < 0 || index >= p->count) {
+		return;
+	}
+	if (!p->from_paths &&
+		!(p->window_first >= 0 && index >= p->window_first && index < p->window_first + p->window_count)) {
+		return;
+	}
+	const char *source = NULL;
+	if (row_at(p, index, NULL, &source) && source) {
+		coverloader_warm(source, size);
+	}
+}
+
+static void warm_ahead(panel_t *p) {
+	int first = -1, last = -1;
+	for (int i = 0; i < ROW_POOL; i++) {
+		int index = p->rows[i].index;
+		if (index < 0 || index >= p->count) {
+			continue;
+		}
+		if (first < 0 || index < first) {
+			first = index;
+		}
+		if (index > last) {
+			last = index;
+		}
+	}
+	if (last < 0 || p->warm_mark == last + 1) {
+		return;
+	}
+	p->warm_mark = last + 1;
+	int size = p->rows[0].grid ? grid_tile_w(p) : THUMB_SIZE;
+	coverloader_warm_clear();
+	for (int k = 1; k <= WARM_AHEAD; k++) {
+		warm_one(p, last + k, size);
+	}
+	for (int k = 1; k <= WARM_BEHIND; k++) {
+		warm_one(p, first - k, size);
+	}
 }
 
 // Requests artwork for the visible rows and collects what the worker has
@@ -1856,7 +2016,7 @@ static void thumbs_update(panel_t *p) {
 		}
 
 		if (!row->thumb_requested) {
-			coverloader_request(row_slot(p, row), source, THUMB_SIZE);
+			coverloader_request(row_slot(p, row), source, row->grid ? grid_tile_w(p) : THUMB_SIZE);
 			row->thumb_requested = true;
 			snprintf(row->thumb_path, sizeof(row->thumb_path), "%s", source);
 		}
@@ -1877,6 +2037,8 @@ static void thumbs_update(panel_t *p) {
 
 	if (anything_pending) {
 		lv_timer_resume(thumb_timer);
+	} else {
+		warm_ahead(p);
 	}
 }
 
@@ -1915,7 +2077,7 @@ static void window_update(panel_t *p) {
 		scroll = 0;
 	}
 
-	int first = row_at_y(p, scroll) - 1;
+	int first = row_at_y(p, scroll) - (panel_is_grid(p) ? 2 : 1);
 	if (first + ROW_POOL > p->count) {
 		first = p->count - ROW_POOL;
 	}
@@ -2096,6 +2258,7 @@ static void index_flash(panel_t *p) {
 	if (p->index_bar && lv_obj_is_hidden(p->index_bar)) {
 		index_show_bar(p, true);
 	}
+	index_mark_current(p);
 }
 
 static void index_hint_show(panel_t *p, int slot) {
@@ -2115,6 +2278,14 @@ static void index_hint_show(panel_t *p, int slot) {
 static void index_rebuild(panel_t *p, bool enabled, bool descending) {
 	p->index_enabled = enabled && p->count >= INDEX_MIN_ROWS;
 	p->index_desc = descending;
+	if (p->index_bar && p->index_marked >= 0 && p->index_marked < INDEX_BUCKETS) {
+		lv_obj_remove_local_style_prop(p->index_letters[p->index_marked], LV_STYLE_TEXT_COLOR, 0);
+	}
+	p->index_marked = -1;
+	if (p->letter_heads) {
+		disc_heads_clear(p);
+		lv_obj_set_height(p->body, body_height(p));
+	}
 
 	if (!p->index_bar) {
 		return;
@@ -2169,6 +2340,49 @@ static void index_rebuild(panel_t *p, bool enabled, bool descending) {
 		// wrong rows.
 		p->index_enabled = false;
 		return;
+	}
+	if (!panel_is_grid(p)) {
+		index_show_bar(p, true);
+	}
+
+	// A letter above the first row of each one in use, on the lists that run
+	// in rows. They are the album page's disc headings under another name:
+	// space above a row, which every sum of rows already counts.
+	if (!panel_is_grid(p) && !panel_is_album(p) && p->disc_count == 0) {
+		int used = 0;
+		for (int i = 0; i < INDEX_BUCKETS; i++) {
+			used += first[i] >= 0;
+		}
+		if (used >= 2) {
+			p->disc_first = malloc((size_t)used * sizeof(*p->disc_first));
+			p->disc_heads = calloc((size_t)used, sizeof(*p->disc_heads));
+		}
+		if (used >= 2 && p->disc_first && p->disc_heads) {
+			int n = 0;
+			for (int slot = 0; slot < INDEX_BUCKETS; slot++) {
+				int bucket = descending ? INDEX_BUCKETS - 1 - slot : slot;
+				if (first[bucket] < 0 || (n > 0 && first[bucket] <= p->disc_first[n - 1])) {
+					continue;
+				}
+				lv_obj_t *head = lv_label_create(p->body);
+				lv_label_set_text(head, INDEX_TEXT[bucket]);
+				lv_obj_set_style_text_font(head, &font_ui_18_bold, 0);
+				lv_obj_set_style_text_color(head, theme()->accent, 0);
+				lv_obj_set_clickable(head, false);
+				p->disc_first[n] = first[bucket];
+				p->disc_heads[n] = head;
+				n++;
+			}
+			p->disc_count = n;
+			p->letter_heads = true;
+			disc_heads_place(p);
+			lv_obj_set_height(p->body, body_height(p));
+		} else if (used >= 2) {
+			free(p->disc_first);
+			free(p->disc_heads);
+			p->disc_first = NULL;
+			p->disc_heads = NULL;
+		}
 	}
 
 	// Top to bottom on screen, which is the alphabet turned round on a Z-A
@@ -2376,7 +2590,10 @@ static bool index_tick(panel_t *p) {
 	if (!index_guard_ok(p)) {
 		return false;
 	}
-	if (p->index_bar && !lv_obj_is_hidden(p->index_bar) && lv_tick_elaps(p->index_wanted_at) > INDEX_HIDE_MS) {
+	// On a list the rail stays, as the design has it; over the album grid it
+	// still comes and goes with the scrolling.
+	if (p->index_bar && !lv_obj_is_hidden(p->index_bar) && lv_tick_elaps(p->index_wanted_at) > INDEX_HIDE_MS &&
+		!(p->index_enabled && !panel_is_grid(p))) {
 		index_show_bar(p, false);
 	}
 	if (p->index_hint && !lv_obj_is_hidden(p->index_hint) && lv_tick_elaps(p->index_hint_at) > INDEX_HINT_MS) {
@@ -2461,10 +2678,10 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 
 	p->index_bar = lv_obj_create(p->screen);
 	lv_obj_remove_style_all(p->index_bar);
-	lv_obj_set_size(p->index_bar, INDEX_BAR_WIDTH, cfg->screen_height - content_top - 8);
+	lv_obj_set_size(p->index_bar, INDEX_BAR_WIDTH, cfg->screen_height - content_top - 8 - MINI_H);
 	lv_obj_align(p->index_bar, LV_ALIGN_TOP_RIGHT, -2, content_top + 4);
 	lv_obj_set_style_bg_color(p->index_bar, theme()->surface, 0);
-	lv_obj_set_style_bg_opa(p->index_bar, LV_OPA_60, 0);
+	lv_obj_set_style_bg_opa(p->index_bar, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_radius(p->index_bar, INDEX_BAR_WIDTH / 2, 0);
 	lv_obj_set_scrollable(p->index_bar, false);
 	lv_obj_set_hidden(p->index_bar, true);
@@ -3555,6 +3772,22 @@ static void menu_btn_cb(lv_event_t *e) {
 	}
 
 	items[n++] = (popover_item_t){"details", menu_details_action, NULL};
+
+	// The sheet names the track it is about: its cover, title and artist.
+	const void *cover = NULL;
+	const char *artist = NULL;
+	for (int i = 0; i < ROW_POOL; i++) {
+		if (p->rows[i].index == index) {
+			if (p->rows[i].has_thumb && p->rows[i].icon) {
+				cover = lv_image_get_src(p->rows[i].icon);
+			}
+			if (p->rows[i].artist && !lv_obj_is_hidden(p->rows[i].artist)) {
+				artist = lv_label_get_text(p->rows[i].artist);
+			}
+			break;
+		}
+	}
+	popover_set_header(cover, menu_name, artist);
 	popover_show(button, items, n);
 }
 
@@ -3621,7 +3854,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	// the browser: that puts the scrollbar out in the margin, beside the
 	// rows, instead of drawing it on top of them.
 	p->list = lv_obj_create(p->screen);
-	lv_obj_set_size(p->list, cfg->screen_width, cfg->screen_height - content_top);
+	lv_obj_set_size(p->list, cfg->screen_width, cfg->screen_height - content_top - MINI_H);
 	lv_obj_align(p->list, LV_ALIGN_TOP_LEFT, 0, content_top);
 	lv_obj_set_style_bg_opa(p->list, 0, 0);
 	lv_obj_set_style_border_width(p->list, 0, 0);
@@ -3760,7 +3993,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_style_border_width(p->sel_delete_btn, 0, 0);
 		lv_obj_set_style_shadow_width(p->sel_delete_btn, 0, 0);
 		lv_obj_set_style_pad_all(p->sel_delete_btn, 0, 0);
-		lv_obj_align(p->sel_delete_btn, LV_ALIGN_BOTTOM_RIGHT, -(int)cfg->padding - 6, -(int)cfg->padding - 6);
+		lv_obj_align(p->sel_delete_btn, LV_ALIGN_BOTTOM_RIGHT, -(int)cfg->padding - 6, -(int)cfg->padding - 6 - MINI_H);
 		lv_obj_add_event_cb(p->sel_delete_btn, sel_delete_cb, LV_EVENT_CLICKED, p);
 		lv_obj_t *bin = lv_image_create(p->sel_delete_btn);
 		lv_image_set_src(bin, &icon_trash);
@@ -3791,6 +4024,10 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &style_row, 0);
 		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
+		// Plain rows on the page, as the design draws its lists: the surface
+		// shows only under a finger.
+		lv_obj_set_style_bg_opa(row->button, LV_OPA_TRANSP, 0);
+		lv_obj_set_style_bg_opa(row->button, LV_OPA_COVER, LV_STATE_PRESSED);
 		lv_obj_set_hidden(row->button, true);
 		lv_obj_set_event_bubble(row->button, true); // so the player sheet can be dragged in
 		lv_obj_add_event_cb(row->button, row_clicked_cb, LV_EVENT_CLICKED, p);
@@ -3950,6 +4187,9 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 
 	// Last, so both sit above the rows they cover.
 	index_build(p, cfg);
+
+	// And the mini-player above everything, along the foot of the page.
+	p->mini_h = navbar_attach_mini(p->screen, cfg);
 }
 
 // ---------------------------------------------------------------------------
@@ -3969,6 +4209,7 @@ static void disc_heads_clear(panel_t *p) {
 	p->disc_first = NULL;
 	p->disc_no = NULL;
 	p->disc_count = 0;
+	p->letter_heads = false;
 	free(p->track_no);
 	p->track_no = NULL;
 }
@@ -4153,20 +4394,32 @@ static void head_paint(panel_t *p) {
 		lv_obj_set_style_text_color(p->head_artist, t ? p->tint_ink : theme()->accent, 0);
 	}
 	local_color(p->head_meta, LV_STYLE_TEXT_COLOR, 0, t, p->tint_dim);
+	// The genre line, last under the names, wears the same quiet ink.
+	if (p->head_meta) {
+		lv_obj_t *names = lv_obj_get_parent(p->head_meta);
+		lv_obj_t *last = lv_obj_get_child(names, -1);
+		if (last && last != p->head_meta && last != p->head_title && last != p->head_artist) {
+			local_color(last, LV_STYLE_TEXT_COLOR, 0, t, p->tint_dim);
+		}
+	}
 
 	for (int i = 0; i < 3; i++) {
 		lv_obj_t *button = p->head_buttons[i];
 		if (!button) {
 			continue;
 		}
-		lv_obj_t *inside = lv_obj_get_child(button, 0);
-		if (i == 1) {
-			// Filled: the accent with white type, or the ink with the page's
-			// colour cut out of it.
-			lv_obj_set_style_bg_color(button, t ? p->tint_ink : theme()->accent, 0);
-			lv_obj_set_style_text_color(inside, t ? p->tint_bg : lv_color_white(), 0);
-		} else {
-			local_color(inside, LV_STYLE_IMAGE_RECOLOR, 0, t, p->tint_ink);
+		// Play is filled -- the accent with its ink, or the page's ink with
+		// the page's colour cut out of it -- and Shuffle sits on the quieter
+		// surface.
+		lv_color_t fill = i == 1 ? (t ? p->tint_ink : theme()->accent) : (t ? p->tint_pressed : theme()->surface_pressed);
+		lv_color_t ink = i == 1 ? (t ? p->tint_bg : theme_on_accent()) : (t ? p->tint_ink : theme()->text_primary);
+		lv_obj_set_style_bg_color(button, fill, 0);
+		uint32_t n = lv_obj_get_child_count(button);
+		for (uint32_t c = 0; c < n; c++) {
+			lv_obj_t *inside = lv_obj_get_child(button, (int32_t)c);
+			lv_obj_set_style_text_color(inside, ink, 0);
+			lv_obj_set_style_image_recolor(inside, ink, 0);
+			lv_obj_set_style_image_recolor_opa(inside, LV_OPA_COVER, 0);
 		}
 	}
 }
@@ -4231,7 +4484,7 @@ static void page_paint(panel_t *p) {
 // stands level with the chevron.
 static void list_place(panel_t *p, bool under_status_bar_only) {
 	int top = under_status_bar_only ? (int)p->cfg->top_bar_height : settingsrow_content_top(p->cfg);
-	lv_obj_set_size(p->list, p->cfg->screen_width, p->cfg->screen_height - top);
+	lv_obj_set_size(p->list, p->cfg->screen_width, p->cfg->screen_height - top - p->mini_h);
 	lv_obj_align(p->list, LV_ALIGN_TOP_LEFT, 0, top);
 }
 
@@ -4355,25 +4608,35 @@ static lv_obj_t *head_glyph_button(lv_obj_t *parent, const lv_image_dsc_t *glyph
 	return button;
 }
 
-// Play: a filled pill with the word on it, as wide as the word needs.
-static lv_obj_t *head_play_button(lv_obj_t *parent, lv_event_cb_t cb, panel_t *p) {
+// Play and Shuffle: two pills side by side, each half the row, a glyph and
+// the word on it.
+static lv_obj_t *head_pill(lv_obj_t *parent, const lv_image_dsc_t *glyph, const char *text, lv_event_cb_t cb,
+						   panel_t *p) {
 	lv_obj_t *button = lv_btn_create(parent);
-	lv_obj_set_size(button, LV_SIZE_CONTENT, HEAD_PLAY_HEIGHT);
+	lv_obj_set_height(button, HEAD_PLAY_HEIGHT);
+	lv_obj_set_flex_grow(button, 1);
 	lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
-	lv_obj_set_style_pad_hor(button, HEAD_PLAY_PAD, 0);
-	lv_obj_set_style_pad_ver(button, 0, 0);
+	lv_obj_set_style_pad_all(button, 0, 0);
+	lv_obj_set_style_pad_column(button, 10, 0);
 	lv_obj_set_style_opa(button, LV_OPA_70, LV_STATE_PRESSED);
+	lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(button, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_event_bubble(button, true);
 	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, p);
 
+	lv_obj_t *image = lv_image_create(button);
+	lv_image_set_src(image, glyph);
+	lv_obj_set_size(image, 28, 28);
+	lv_image_set_inner_align(image, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_set_clickable(image, false);
+
 	lv_obj_t *label = lv_label_create(button);
-	lv_label_set_text(label, tr("medialist_play"));
-	lv_obj_set_style_text_font(label, &font_ui_24_bold, 0);
+	lv_label_set_text(label, tr(text));
+	lv_obj_set_style_text_font(label, &font_ui_22_bold, 0);
 	lv_obj_set_clickable(label, false);
-	lv_obj_center(label);
 	return button;
 }
 
@@ -4402,64 +4665,98 @@ static void head_build(panel_t *p) {
 	lv_obj_set_pos(p->head, 0, 0);
 	lv_obj_set_flex_flow(p->head, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(p->head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(p->head, 6, 0);
-	// The top of the cover level with the top of the chevron, which stands
-	// centred in a corner button's height below the page's padding.
-	lv_obj_set_style_pad_top(p->head,
-							 (int)p->cfg->padding + (CORNER_BUTTON_SIZE - (int)icon_chevron_left.header.h) / 2, 0);
-	lv_obj_set_style_pad_bottom(p->head, HEAD_GAP, 0);
+	lv_obj_set_style_pad_row(p->head, 16, 0);
+	// Under the chevron's row, which this page keeps clear: the cover beside
+	// the names, then the two ways to start the record.
+	lv_obj_set_style_pad_top(p->head, (int)p->cfg->padding + CORNER_BUTTON_SIZE + 8, 0);
+	lv_obj_set_style_pad_bottom(p->head, 12, 0);
 	lv_obj_set_scrollable(p->head, false);
 	// A part of the page, not a control: a swipe that starts on the cover
 	// scrolls the list, pulls the player in or goes back like one on a row.
 	lv_obj_set_clickable(p->head, false);
 	lv_obj_set_event_bubble(p->head, true);
 
+	lv_obj_t *top = lv_obj_create(p->head);
+	lv_obj_remove_style_all(top);
+	lv_obj_set_size(top, width, LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(top, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_style_pad_column(top, 16, 0);
+	lv_obj_set_scrollable(top, false);
+	lv_obj_set_clickable(top, false);
+	lv_obj_set_event_bubble(top, true);
+
 	// The album glyph on a card until the picture arrives, and for good when
 	// the record has none.
-	p->head_cover = lv_image_create(p->head);
+	p->head_cover = lv_image_create(top);
 	lv_obj_set_size(p->head_cover, HEAD_COVER_SIZE, HEAD_COVER_SIZE);
 	lv_obj_add_style(p->head_cover, &theme_style_card, 0);
+	lv_obj_set_style_radius(p->head_cover, 12, 0);
 	lv_obj_set_style_pad_all(p->head_cover, 0, 0);
 	lv_image_set_inner_align(p->head_cover, LV_IMAGE_ALIGN_CENTER);
 	lv_image_set_src(p->head_cover, &icon_album_big);
 	lv_obj_add_style(p->head_cover, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(p->head_cover, LV_OPA_COVER, 0);
 	lv_obj_set_clickable(p->head_cover, false);
-	lv_obj_set_style_margin_bottom(p->head_cover, 10, 0);
 
-	p->head_title = head_line(p->head, width, p->title, &font_ui_28, HEAD_TITLE_LINES);
+	int text_w = width - HEAD_COVER_SIZE - 16;
+	lv_obj_t *names = lv_obj_create(top);
+	lv_obj_remove_style_all(names);
+	lv_obj_set_size(names, text_w, LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(names, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_style_pad_row(names, 6, 0);
+	lv_obj_set_scrollable(names, false);
+	lv_obj_set_clickable(names, false);
+	lv_obj_set_event_bubble(names, true);
+
+	// "ALBUM · 2020" over the title, the artist and the genre under it.
+	char meta[200] = "";
+	char kind[64];
+	snprintf(kind, sizeof(kind), "%s", tr("medialist_album_label"));
+	for (char *c = kind; *c; c++) {
+		if (*c >= 'a' && *c <= 'z') {
+			*c = (char)(*c - 32);
+		}
+	}
+	if (info.year > 0) {
+		snprintf(meta, sizeof(meta), "%s \xC2\xB7 %d", kind, info.year);
+	} else {
+		snprintf(meta, sizeof(meta), "%s", kind);
+	}
+	p->head_meta = head_line(names, text_w, meta, &font_ui_16_bold, 1);
+	lv_obj_add_style(p->head_meta, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_align(p->head_meta, LV_TEXT_ALIGN_LEFT, 0);
+	lv_obj_set_style_text_letter_space(p->head_meta, 1, 0);
+
+	p->head_title = head_line(names, text_w, p->title, &font_ui_28_bold, 3);
 	lv_obj_add_style(p->head_title, &theme_style_text, 0);
+	lv_obj_set_style_text_align(p->head_title, LV_TEXT_ALIGN_LEFT, 0);
 
 	if (info.artist[0]) {
-		p->head_artist = head_line(p->head, width, info.artist, &font_ui_24, 1);
+		p->head_artist = head_line(names, text_w, info.artist, &font_ui_20, 1);
+		lv_obj_set_style_text_align(p->head_artist, LV_TEXT_ALIGN_LEFT, 0);
 	}
-
-	char meta[200] = "";
-	if (info.genre[0] && info.year > 0) {
-		snprintf(meta, sizeof(meta), "%s \xC2\xB7 %d", info.genre, info.year);
-	} else if (info.genre[0]) {
-		snprintf(meta, sizeof(meta), "%s", info.genre);
-	} else if (info.year > 0) {
-		snprintf(meta, sizeof(meta), "%d", info.year);
-	}
-	if (meta[0]) {
-		p->head_meta = head_line(p->head, width, meta, &font_ui_20, 1);
-		lv_obj_add_style(p->head_meta, &theme_style_text_dim, 0);
+	if (info.genre[0]) {
+		lv_obj_t *genre = head_line(names, text_w, info.genre, &font_ui_16, 1);
+		lv_obj_add_style(genre, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_align(genre, LV_TEXT_ALIGN_LEFT, 0);
+		lv_obj_set_style_text_opa(genre, LV_OPA_70, 0);
 	}
 
 	lv_obj_t *buttons = lv_obj_create(p->head);
 	lv_obj_remove_style_all(buttons);
-	lv_obj_set_size(buttons, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+	lv_obj_set_size(buttons, width, LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(buttons, HEAD_BTN_GAP, 0);
-	lv_obj_set_style_margin_top(buttons, 12, 0);
+	lv_obj_set_style_pad_column(buttons, 8, 0);
 	lv_obj_set_scrollable(buttons, false);
 	lv_obj_set_clickable(buttons, false);
 	lv_obj_set_event_bubble(buttons, true);
-	p->head_buttons[0] = head_glyph_button(buttons, &icon_shuffle, head_shuffle_cb, p);
-	p->head_buttons[1] = head_play_button(buttons, head_play_cb, p);
-	p->head_buttons[2] = head_glyph_button(buttons, &icon_list_queue, head_queue_cb, p);
+	p->head_buttons[1] = head_pill(buttons, &icon_play, "medialist_play", head_play_cb, p);
+	p->head_buttons[0] = head_pill(buttons, &icon_shuffle, "medialist_shuffle", head_shuffle_cb, p);
+	p->head_buttons[2] = NULL;
+	(void)head_queue_cb;
+	(void)head_glyph_button;
 	head_paint(p);
 
 	// The real height of all that, for the rows to start under. The screen may
@@ -4467,7 +4764,13 @@ static void head_build(panel_t *p) {
 	// here rather than read as whatever LVGL started the objects at.
 	lv_obj_update_layout(p->head);
 	p->head_height = lv_obj_get_height(p->head);
-	p->head_title_top = lv_obj_get_y(p->head_title);
+	{
+		// Where the title starts from the top of the list, nested as it now is.
+		lv_area_t title_area, head_area;
+		lv_obj_get_coords(p->head_title, &title_area);
+		lv_obj_get_coords(p->head, &head_area);
+		p->head_title_top = title_area.y1 - head_area.y1;
+	}
 
 	// The page heading stays empty while the head's own title is on screen,
 	// and takes the album's name once it has scrolled under the heading row
@@ -4607,6 +4910,137 @@ static void head_bar_update(panel_t *p) {
 }
 
 // Takes away whatever the last list put above and between its rows.
+// The letter the top of the list is in, lit on the rail in the accent.
+static void index_mark_current(panel_t *p) {
+	if (!p->index_bar || !p->index_enabled || lv_obj_is_hidden(p->index_bar)) {
+		return;
+	}
+	int row = row_at_y(p, (int)lv_obj_get_scroll_y(p->list));
+	int slot = -1;
+	for (int i = 0; i < INDEX_BUCKETS; i++) {
+		if (p->index_row[i] >= 0 && p->index_row[i] <= row && (slot < 0 || p->index_row[i] >= p->index_row[slot])) {
+			slot = i;
+		}
+	}
+	if (slot == p->index_marked) {
+		return;
+	}
+	if (p->index_marked >= 0 && p->index_marked < INDEX_BUCKETS) {
+		lv_obj_remove_local_style_prop(p->index_letters[p->index_marked], LV_STYLE_TEXT_COLOR, 0);
+	}
+	if (slot >= 0) {
+		lv_obj_set_style_text_color(p->index_letters[slot], theme()->accent, 0);
+	}
+	p->index_marked = slot;
+}
+
+// ---------------------------------------------------------------------------
+// The chips above a list of tracks: the way to start it, and how it is ordered
+// ---------------------------------------------------------------------------
+
+#define CHIPS_H 64
+
+static void chip_shuffle_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	play_artist(lv_event_get_user_data(e), true);
+}
+
+static void chip_play_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	play_artist(lv_event_get_user_data(e), false);
+}
+
+static void sort_clicked_cb(lv_event_t *e);
+
+static lv_obj_t *chip_make(lv_obj_t *parent, const lv_image_dsc_t *glyph, const char *text, bool filled,
+						   bool glyph_last, lv_event_cb_t cb, panel_t *p) {
+	lv_obj_t *chip = lv_btn_create(parent);
+	lv_obj_remove_style_all(chip);
+	lv_obj_set_size(chip, LV_SIZE_CONTENT, 52);
+	lv_obj_set_style_radius(chip, 26, 0);
+	lv_obj_set_style_pad_hor(chip, 20, 0);
+	lv_obj_set_style_pad_column(chip, 8, 0);
+	lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+	lv_obj_set_style_opa(chip, LV_OPA_70, LV_STATE_PRESSED);
+	lv_obj_set_flex_flow(chip, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(chip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_event_bubble(chip, true); // a swipe across it still scrolls or goes back
+	lv_obj_add_event_cb(chip, cb, LV_EVENT_CLICKED, p);
+	lv_color_t ink;
+	if (filled) {
+		lv_obj_set_style_bg_color(chip, theme()->accent, 0);
+		ink = theme_on_accent();
+	} else {
+		lv_obj_set_style_bg_color(chip, theme()->surface_pressed, 0);
+		ink = theme()->text_primary;
+	}
+	lv_obj_t *label = lv_label_create(chip);
+	lv_label_set_text(label, text);
+	lv_obj_set_style_text_font(label, &font_ui_18_bold, 0);
+	lv_obj_set_style_text_color(label, ink, 0);
+	lv_obj_set_clickable(label, false);
+	if (glyph) {
+		lv_obj_t *image = lv_image_create(chip);
+		lv_image_set_src(image, glyph);
+		lv_obj_set_size(image, 24, 24);
+		lv_image_set_inner_align(image, LV_IMAGE_ALIGN_CONTAIN);
+		lv_obj_set_style_image_recolor(image, ink, 0);
+		lv_obj_set_style_image_recolor_opa(image, LV_OPA_COVER, 0);
+		lv_obj_set_clickable(image, false);
+		if (!glyph_last) {
+			lv_obj_move_to_index(image, 0);
+		}
+	}
+	return chip;
+}
+
+// Built for the list just loaded and thrown away with it. An album page has
+// its own Play and Shuffle in the head, so it gets none.
+static void chips_build(panel_t *p) {
+	if (p->chips) {
+		lv_obj_delete(p->chips);
+		p->chips = NULL;
+		if (!p->head) {
+			p->head_height = 0;
+		}
+	}
+	if (p->head || !p->is_tracks || p->count <= 0) {
+		return;
+	}
+	int width = (int)p->cfg->screen_width - 2 * (int)p->cfg->padding;
+	p->chips = lv_obj_create(p->body);
+	lv_obj_remove_style_all(p->chips);
+	lv_obj_set_size(p->chips, width, CHIPS_H);
+	lv_obj_set_pos(p->chips, 0, 0);
+	lv_obj_set_flex_flow(p->chips, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(p->chips, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+	lv_obj_set_style_pad_column(p->chips, 8, 0);
+	lv_obj_set_scrollable(p->chips, false);
+	lv_obj_set_clickable(p->chips, false);
+	lv_obj_set_event_bubble(p->chips, true);
+
+	if (p->from_paths || p->kind == LIBRARY_LIST_PLAYLIST) {
+		chip_make(p->chips, &icon_play, tr("medialist_play"), true, false, chip_play_cb, p);
+		chip_make(p->chips, &icon_shuffle, tr("medialist_shuffle"), false, false, chip_shuffle_cb, p);
+	} else {
+		chip_make(p->chips, &icon_shuffle, tr("medialist_shuffle_all"), true, false, chip_shuffle_cb, p);
+		// The order, where this list has one to change: the corner's button
+		// moves down here and says which way the list runs.
+		if (p->sort_btn && !lv_obj_is_hidden(p->sort_btn)) {
+			const char *way = p->list_order != LIBRARY_ORDER_DEFAULT ? tr("medialist_sort")
+							  : p->list_desc				   ? "Z\xE2\x80\x93" "A"
+															   : "A\xE2\x80\x93Z";
+			chip_make(p->chips, &icon_chevron_down, way, false, true, sort_clicked_cb, p);
+			lv_obj_set_hidden(p->sort_btn, true);
+		}
+	}
+	p->head_height = CHIPS_H;
+}
+
 static void album_extras_clear(panel_t *p) {
 	head_clear(p);
 	disc_heads_clear(p);
@@ -4665,6 +5099,7 @@ void medialist_set_album_head(bool on) {
 	settingsrow_title_corner_slots(p->title_label, p->cfg, p->corner_slots);
 	album_extras_clear(p);
 	album_extras_build(p);
+	chips_build(p);
 	lv_obj_set_height(p->body, body_height(p));
 	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
 	p->saved_scroll = 0;
@@ -4999,6 +5434,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// One album: the head, when it is on, and the disc headings.
 	album_extras_clear(p);
 	album_extras_build(p);
+	chips_build(p);
 
 	lv_obj_set_height(p->body, body_height(p));
 	if (p->count == 0) {
@@ -5109,6 +5545,7 @@ void medialist_open_paths(const char *title, const char *const *paths, const cha
 		}
 	}
 
+	chips_build(p);
 	lv_obj_set_height(p->body, body_height(p));
 	lv_label_set_text(p->empty, tr("library_empty_note"));
 	lv_obj_set_width(p->empty, LV_SIZE_CONTENT);

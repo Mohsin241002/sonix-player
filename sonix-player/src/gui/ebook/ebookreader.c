@@ -11,6 +11,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
+#include "src/gui/shell/tabbar.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
@@ -99,7 +100,14 @@ static ebook_t *book;
 static lv_obj_t *page_box;
 static lv_obj_t *page_spare;
 static bool turning; // an animation is running: gestures wait for it
-static ebookbar_t status_bar; // what the reader chose to see along the bottom
+static ebookbar_t status_bar;
+#define READER_HEADER_H 72
+#define READER_AUDIO_H 88
+static bool chrome_visible = true;
+static lv_obj_t *reader_header;
+static lv_obj_t *reader_title;
+static lv_obj_t *reader_chapter;
+static lv_obj_t *header_icons[4];
 
 // Where the current page starts, and the trail of the pages before it.
 static uint32_t page_block, page_offset;
@@ -141,7 +149,10 @@ static turn_mode_t opt_turn = TURN_INSTANT;
 // keeps the last line off it. Not a constant: the reader chooses what is on the
 // strip, and a strip with nothing on it reserves no room.
 static bool chapter_has_audio(void) { return ebook_audio_count(book) || ebook_audio_unavailable(book); }
-static int32_t bar_space(void) { return ebookbar_height() + 6 + (chapter_has_audio() ? 62 : 0); }
+static int32_t reader_header_height(void) { return chrome_visible ? READER_HEADER_H : 0; }
+static int32_t bar_space(void) {
+	return reader_header_height() + (chrome_visible ? ebookbar_height() + 6 + (chapter_has_audio() ? READER_AUDIO_H : 0) : 0);
+}
 
 static void audio_chapter_loaded(void);
 static void audio_refresh(void);
@@ -152,7 +163,8 @@ static uint32_t audio_generation;
 static uint32_t highlight_begin = UINT32_MAX, highlight_end = UINT32_MAX;
 
 static void show_page(void);
-static void menu_open(void);
+static void toggle_reader_chrome(void);
+static void reader_chrome_layout(void);
 static void update_status(void);
 static void position_save(void);
 static bool load_chapter(uint32_t spine, uint32_t block, uint32_t offset);
@@ -167,7 +179,7 @@ static void present(int direction);
 static lv_color_t paper_colour(void) {
 	switch (opt_theme) {
 	case THEME_SEPIA:
-		return lv_color_hex(0xF3E9D2);
+		return lv_color_hex(0xF4E8D4);
 	case THEME_DARK:
 		return lv_color_hex(0x14140F);
 	case THEME_LIGHT:
@@ -179,7 +191,7 @@ static lv_color_t paper_colour(void) {
 static lv_color_t ink_colour(void) {
 	switch (opt_theme) {
 	case THEME_SEPIA:
-		return lv_color_hex(0x40352A);
+		return lv_color_hex(0x2B2218);
 	case THEME_DARK:
 		return lv_color_hex(0xC8C6BE);
 	case THEME_LIGHT:
@@ -194,7 +206,16 @@ static void apply_colours(void) {
 	}
 	lv_obj_set_style_bg_color(ebookreader_screen, paper_colour(), 0);
 	lv_obj_set_style_bg_opa(ebookreader_screen, LV_OPA_COVER, 0);
-	audio_refresh();
+	if (reader_header) {
+		lv_obj_set_style_bg_color(reader_header, paper_colour(), 0);
+		lv_obj_set_style_border_color(reader_header, ink_colour(), 0);
+		lv_obj_set_style_text_color(reader_title, ink_colour(), 0);
+		lv_obj_set_style_text_color(reader_chapter, ink_colour(), 0);
+		for (size_t i = 0; i < sizeof(header_icons) / sizeof(header_icons[0]); i++) {
+			lv_obj_set_style_image_recolor(header_icons[i], ink_colour(), 0);
+		}
+		reader_chrome_layout();
+	}
 	update_status();
 }
 
@@ -1424,6 +1445,13 @@ static void update_status(void) {
 
 	uint32_t blocks = ebook_block_count(book);
 	uint32_t chapter = ebook_chapter_index(book);
+	if (reader_chapter && !lv_obj_is_hidden(reader_header)) {
+		char text[80];
+		snprintf(text, sizeof(text), "%s %u / %u", tr("chapter"), chapter + 1u, ebook_spine_count(book));
+		if (strcmp(lv_label_get_text(reader_chapter), text) != 0) {
+			lv_label_set_text(reader_chapter, text);
+		}
+	}
 
 	ebookbar_state_t state = {
 		.chapter = chapter,
@@ -1965,13 +1993,11 @@ static void page_pressed_cb(lv_event_t *e) {
 	}
 	last_tap_at = 0;
 
-	// Held still: the menu, if it was held in the middle. Either way a hold
-	// never turns a page -- someone who holds a finger down meant something by
-	// it, and turning a page when they give up is the wrong answer to both.
+	if (!moved && in_the_centre(&end)) {
+		toggle_reader_chrome();
+		return;
+	}
 	if (!moved && lv_tick_elaps(pressed_at) > LONG_PRESS_MS) {
-		if (in_the_centre(&end)) {
-			menu_open();
-		}
 		return;
 	}
 
@@ -2018,37 +2044,37 @@ static void page_pressed_cb(lv_event_t *e) {
 }
 
 // ---------------------------------------------------------------------------
-// the menu
-//
-// A long press in the middle brings up the veil the pop-overs use and a bar
-// along the bottom with three things on it. Each of the three opens a card in
-// the middle -- the shape Gearboy's in-game menu has -- and the card's chevron
-// comes back to the bar. A tap on the veil puts the whole thing away.
-// ---------------------------------------------------------------------------
-
-// How far the menu stays off the edges of the screen. A bar that runs to the
-// bottom and to both sides reads as a panel that has fallen off the page rather
-// than one that has come up.
-#define MENU_INSET 16
+// Reader sheets. Chapter and bookmark lists use the full display. Text and
+// narration sheets leave the book visible above their controls.
 
 typedef enum {
-	SECTION_CHAPTERS = 0,
-	SECTION_FONT,
-	SECTION_THEME,
+	SECTION_CHAPTERS,
+	SECTION_TEXT,
 	SECTION_AUDIO,
+	SECTION_MARKS,
 } section_t;
 
 static lv_obj_t *menu_veil;
-static lv_obj_t *menu_bar;	 // the three icons and the way out of the book
-static lv_obj_t *menu_card;	 // one section at a time, over the bar
+static lv_obj_t *menu_card;
 static lv_obj_t *menu_heading;
+static lv_obj_t *menu_subtitle;
+static lv_obj_t *menu_header;
+static lv_obj_t *menu_mark_button;
+static lv_obj_t *menu_hint;
 static lv_obj_t *menu_body;
-// Which section the card is showing. The panel is shared, so the chapter list's
-// scroll handler has to know when the thing being scrolled is not its list.
+static lv_obj_t *menu_done;
 static section_t menu_section = SECTION_CHAPTERS;
 
 // How much of the chapter list is on the panel; see build_chapters().
-static uint32_t chapters_built;	 // entries built so far
+#define CHAPTER_ROW_H 76
+#define CHAPTER_POOL_SIZE 14
+static lv_obj_t *chapter_list;
+static struct {
+	lv_obj_t *button;
+	lv_obj_t *number;
+	lv_obj_t *title;
+	int index;
+} chapter_rows[CHAPTER_POOL_SIZE];
 static uint32_t chapters_total;	 // entries the book has
 static bool chapters_from_toc;	 // its own index, or the spine standing in for one
 
@@ -2058,51 +2084,23 @@ static bool chapters_from_toc;	 // its own index, or the spine standing in for o
 // the recolour is a style set when the object is built -- a snapshot of the
 // theme at that moment. The menu is built once, at startup, so these have to be
 // recoloured by hand when the theme changes.
-#define MENU_GLYPH_MAX 6
-static lv_obj_t *menu_glyphs[MENU_GLYPH_MAX];
-static int menu_glyph_count;
-
-static void remember_glyph(lv_obj_t *glyph) {
-	if (menu_glyph_count < MENU_GLYPH_MAX) {
-		menu_glyphs[menu_glyph_count++] = glyph;
-	}
-}
-
-static void menu_theme_refresh(void) {
-	for (int i = 0; i < menu_glyph_count; i++) {
-		if (menu_glyphs[i]) {
-			lv_obj_set_style_image_recolor(menu_glyphs[i], theme()->text_primary, 0);
-		}
-	}
-}
-
 static void build_chapters(void);
 static void build_font(void);
-static void build_theme(void);
+static void build_theme_choices(void);
+static void build_turn_choices(void);
 static void build_audio(void);
 static void audio_forget_widgets(void);
+static void build_marks(void);
 
 static void menu_close(void) {
-	if (menu_veil) {
-		lv_obj_set_hidden(menu_veil, true);
-	}
-	if (menu_body) {
-		audio_forget_widgets();
-		// The rows of a long chapter list are the one thing in here worth not
-		// keeping around while a book is being read.
-		lv_obj_clean(menu_body);
-		chapters_built = 0;
-	}
-}
-
-static void menu_open(void) {
-	if (!menu_veil || !book) {
+	if (!menu_veil) {
 		return;
 	}
-	lv_obj_set_hidden(menu_card, true);
-	lv_obj_set_hidden(menu_bar, false);
-	lv_obj_set_hidden(menu_veil, false);
-	lv_obj_move_foreground(menu_veil);
+	lv_obj_set_hidden(menu_veil, true);
+	audio_forget_widgets();
+	chapters_total = 0;
+	chapter_list = NULL;
+	lv_obj_clean(menu_body);
 }
 
 static void menu_veil_cb(lv_event_t *e) {
@@ -2110,50 +2108,104 @@ static void menu_veil_cb(lv_event_t *e) {
 	menu_close();
 }
 
-static void section_open(lv_event_t *e) {
-	section_t which = (section_t)(intptr_t)lv_event_get_user_data(e);
-	static const char *const SECTION_TITLES[] = {"chapters", "ebookreader_font_settings", "ebookreader_book_theme", "ebookaudio_title"};
+static void show_section(section_t section) {
+	if (!book) {
+		return;
+	}
+	menu_close();
+	menu_section = section;
+	bool full = section == SECTION_CHAPTERS || section == SECTION_MARKS;
+	lv_obj_set_height(menu_card, full ? g_cfg->screen_height :
+						  section == SECTION_AUDIO ? 388 : 575);
+	lv_obj_set_style_radius(menu_card, full ? 0 : 22, 0);
+	lv_obj_set_hidden(menu_hint, full);
+	lv_obj_set_hidden(menu_header, !full && section != SECTION_AUDIO);
+	lv_obj_set_hidden(menu_mark_button, section != SECTION_CHAPTERS);
+	lv_obj_set_hidden(menu_subtitle, !full);
+	if (full) {
+		lv_label_set_text_fmt(menu_subtitle, "%s · %u / %u", ebook_title(book),
+							  ebook_chapter_index(book) + 1u, ebook_spine_count(book));
+	}
+	lv_obj_set_hidden(menu_done, section != SECTION_TEXT);
 
-	audio_forget_widgets();
-	lv_obj_clean(menu_body);
-	chapters_built = 0;
-	menu_section = which;
-	lv_label_set_text(menu_heading, tr(SECTION_TITLES[which]));
-	switch (which) {
+	switch (section) {
 	case SECTION_CHAPTERS:
+		lv_label_set_text(menu_heading, tr("chapters"));
 		build_chapters();
 		break;
-	case SECTION_FONT:
+	case SECTION_TEXT:
+		build_theme_choices();
 		build_font();
-		break;
-	case SECTION_THEME:
-		build_theme();
+		build_turn_choices();
 		break;
 	case SECTION_AUDIO:
+		lv_label_set_text(menu_heading, tr("ebookaudio_title"));
 		build_audio();
 		break;
+	case SECTION_MARKS:
+		lv_label_set_text(menu_heading, tr("bookmarks"));
+		build_marks();
+		break;
 	}
-	lv_obj_scroll_to_y(menu_body, 0, LV_ANIM_OFF);
-	lv_obj_set_hidden(menu_bar, true);
-	lv_obj_set_hidden(menu_card, false);
+	if (section != SECTION_CHAPTERS) {
+		lv_obj_scroll_to_y(menu_body, 0, LV_ANIM_OFF);
+	}
+	lv_obj_set_hidden(menu_veil, false);
+	lv_obj_move_foreground(menu_veil);
+}
+
+static void section_open(lv_event_t *e) {
+	show_section((section_t)(intptr_t)lv_event_get_user_data(e));
 }
 
 static void section_back_cb(lv_event_t *e) {
 	(void)e;
-	audio_forget_widgets();
-	lv_obj_clean(menu_body);
-	chapters_built = 0;
-	lv_obj_set_hidden(menu_card, true);
-	lv_obj_set_hidden(menu_bar, false);
+	if (menu_section == SECTION_MARKS) {
+		show_section(SECTION_CHAPTERS);
+	} else {
+		menu_close();
+	}
 }
 
-// The way out of the book. It has to be in here and not on the screen edge: a
-// sideways drag turns a page, so the swipe that leaves every other page of this
-// player is the one gesture the reader cannot have.
 static void close_book_cb(lv_event_t *e) {
 	(void)e;
 	menu_close();
-	back_btn_cb(NULL); // what the chevron would do, which is not drawn here
+	back_btn_cb(NULL);
+}
+
+static void bookmark_button_cb(lv_event_t *e) {
+	(void)e;
+	save_bookmark();
+}
+
+static void bookmark_pick_cb(lv_event_t *e) {
+	bookmark_t mark;
+	int index = (int)(intptr_t)lv_event_get_user_data(e);
+	if (book && bookmark_get(ebook_path(book), index, &mark)) {
+		menu_close();
+		load_chapter(mark.spine, mark.block, mark.offset);
+	}
+}
+
+static void build_marks(void) {
+	int count = bookmark_count(ebook_path(book));
+	if (!count) {
+		lv_obj_t *empty = lv_label_create(menu_body);
+		lv_obj_set_width(empty, lv_pct(100));
+		lv_obj_add_style(empty, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(empty, &font_ui_20, 0);
+		lv_label_set_text(empty, tr("ebookmarks_empty_note"));
+	}
+	for (int i = count - 1; i >= 0; i--) {
+		bookmark_t mark;
+		if (bookmark_get(ebook_path(book), i, &mark)) {
+			char chapter[64];
+			snprintf(chapter, sizeof(chapter), "%s %u", tr("chapter"), mark.spine + 1u);
+			lv_obj_t *row = settingsrow_add(menu_body, mark.text[0] ? mark.text : chapter, NULL,
+								 bookmark_pick_cb, (void *)(intptr_t)i);
+			settingsrow_name_lines(row, 2);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2161,121 +2213,106 @@ static void close_book_cb(lv_event_t *e) {
 // ---------------------------------------------------------------------------
 
 static void chapter_pick_cb(lv_event_t *e) {
-	uint32_t spine = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+	lv_obj_t *row = lv_event_get_target_obj(e);
+	uint32_t spine = (uint32_t)(uintptr_t)lv_obj_get_user_data(row);
 	menu_close();
 	load_chapter(spine, 0, 0);
 }
 
-// One entry of the chapter list.
-//
-// Built here rather than with settingsrow_action() because a settings row is a
-// fixed hundred pixels tall and steps its name down a font size when it does not
-// fit, which makes a long chapter title unreadably small. Here the row grows and
-// the title wraps instead.
-static void chapter_entry(const char *title, uint32_t spine, uint8_t depth) {
-	lv_obj_t *row = lv_btn_create(menu_body);
-	lv_obj_set_width(row, lv_pct(100));
-	lv_obj_set_height(row, LV_SIZE_CONTENT);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 20, 0);
-	// Enough that a one-line entry still looks like a row and not like a label,
-	// and a three-line one has the same air above and below it.
-	lv_obj_set_style_pad_ver(row, 22, 0);
-	lv_obj_set_style_min_height(row, 88, 0);
-	lv_obj_add_event_cb(row, chapter_pick_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)spine);
-
-	lv_obj_t *name = lv_label_create(row);
-	lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
-	lv_label_set_text(name, title);
-	lv_obj_add_style(name, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name, &font_ui_22, 0);
-	// A sub-entry is indented rather than given a smaller font: at this size a
-	// smaller font is a font nobody can read.
-	lv_obj_set_width(name, lv_pct(100) - depth * 18);
-	lv_obj_align(name, LV_ALIGN_LEFT_MID, depth * 18, 0);
-}
-
-// ---------------------------------------------------------------------------
-// The list is built a screenful at a time
-//
-// Every entry is a card with a title that wraps, and LVGL has to measure all of
-// them before it can draw the first, at a cost that grows faster than the list
-// does. All the reader waits on is the first few entries.
-//
-// So the first batch goes up and the rest follow as the list is scrolled. The
-// entries that arrive are appended below the ones already there, which is the
-// one place where adding something does not move what is on screen.
-// ---------------------------------------------------------------------------
-
-#define CHAPTERS_FIRST 12
-#define CHAPTERS_MORE 12
-
-// One entry by its place in the list, whichever of the two the book provides.
-static void chapter_entry_at(uint32_t i) {
-	if (chapters_from_toc) {
-		const ebook_toc_entry_t *entry = ebook_toc(book, i);
-		if (entry) {
-			chapter_entry(entry->label, entry->spine, entry->depth);
-		}
+// Keep one visible window of chapter rows, including when opening deep in a
+// long book. The scroll extent comes from the chapter count alone.
+static void bind_chapters(void) {
+	if (!chapter_list) {
 		return;
 	}
-	// A book with no table of contents still has chapters: the spine is the
-	// list, and a numbered entry is better than an empty panel.
-	char label[64];
-	snprintf(label, sizeof(label), "%s %u", tr("chapter"), i + 1u);
-	chapter_entry(label, i, 0);
-}
-
-static void chapters_add(uint32_t how_many) {
-	uint32_t end = chapters_built + how_many;
-	if (end > chapters_total) {
-		end = chapters_total;
-	}
-	for (; chapters_built < end; chapters_built++) {
-		chapter_entry_at(chapters_built);
-	}
-}
-
-// Keeps going until there is something below the fold, so that a panel taller
-// than the first batch still has a scroll to ask for the rest with. Bounded
-// because a book of one-line chapters on a tall panel could otherwise walk the
-// whole list here, which is the thing this is for avoiding.
-static void chapters_fill_panel(void) {
-	for (int guard = 0; guard < 4 && chapters_built < chapters_total; guard++) {
-		lv_obj_update_layout(menu_body);
-		if (lv_obj_get_scroll_bottom(menu_body) > 0) {
-			return;
+	int first = LV_MAX(0, lv_obj_get_scroll_y(menu_body) / CHAPTER_ROW_H);
+	uint32_t current = ebook_chapter_index(book);
+	for (int offset = 0; offset < CHAPTER_POOL_SIZE; offset++) {
+		int index = first + offset;
+		int slot = index % CHAPTER_POOL_SIZE;
+		lv_obj_t *row = chapter_rows[slot].button;
+		bool visible = index < (int)chapters_total;
+		lv_obj_set_hidden(row, !visible);
+		if (!visible || chapter_rows[slot].index == index) {
+			continue;
 		}
-		chapters_add(CHAPTERS_MORE);
+		chapter_rows[slot].index = index;
+		const ebook_toc_entry_t *entry = chapters_from_toc ? ebook_toc(book, (uint32_t)index) : NULL;
+		uint32_t spine = entry ? entry->spine : (uint32_t)index;
+		lv_obj_set_user_data(row, (void *)(uintptr_t)spine);
+		lv_obj_set_y(row, index * CHAPTER_ROW_H);
+		lv_label_set_text_fmt(chapter_rows[slot].number, "%d", index + 1);
+		if (entry) {
+			lv_label_set_text(chapter_rows[slot].title, entry->label);
+		} else {
+			lv_label_set_text_fmt(chapter_rows[slot].title, "%s %u", tr("chapter"), spine + 1u);
+		}
+		lv_obj_set_style_pad_left(chapter_rows[slot].title, entry ? LV_MIN(entry->depth, 4) * 8 : 0, 0);
+		bool active = spine == current;
+		lv_obj_set_style_bg_color(row, active ? theme()->accent : theme()->surface, 0);
+		lv_obj_set_style_text_color(chapter_rows[slot].number, active ? theme_on_accent() : theme()->text_secondary, 0);
+		lv_obj_set_style_text_color(chapter_rows[slot].title, active ? theme_on_accent() : theme()->text_primary, 0);
 	}
 }
 
 static void chapters_scrolled_cb(lv_event_t *e) {
 	(void)e;
-	if (menu_section != SECTION_CHAPTERS || chapters_built >= chapters_total) {
-		return;
-	}
-	// Within one panel's worth of the bottom: far enough ahead that the next
-	// batch is there before the finger reaches it.
-	if (lv_obj_get_scroll_bottom(menu_body) < lv_obj_get_height(menu_body)) {
-		chapters_add(CHAPTERS_MORE);
-	}
+	bind_chapters();
 }
 
 static void build_chapters(void) {
-	chapters_built = 0;
-	chapters_total = ebook_toc_count(book);
-	chapters_from_toc = chapters_total > 0;
-	if (!chapters_from_toc) {
-		chapters_total = ebook_spine_count(book);
+	uint32_t toc_count = ebook_toc_count(book);
+	chapters_from_toc = toc_count > 0;
+	chapters_total = chapters_from_toc ? toc_count : ebook_spine_count(book);
+	uint32_t spine = ebook_chapter_index(book);
+	uint32_t selected = spine;
+	if (chapters_from_toc) {
+		selected = 0;
+		for (uint32_t i = 0; i < toc_count; i++) {
+			const ebook_toc_entry_t *entry = ebook_toc(book, i);
+			if (entry && entry->spine <= spine) {
+				selected = i;
+				if (entry->spine == spine) {
+					break;
+				}
+			}
+		}
 	}
-
-	chapters_add(CHAPTERS_FIRST);
-	chapters_fill_panel();
+	lv_obj_t *list = lv_obj_create(menu_body);
+	lv_obj_remove_style_all(list);
+	lv_obj_set_size(list, lv_pct(100), (int32_t)chapters_total * CHAPTER_ROW_H);
+	lv_obj_set_style_radius(list, 16, 0);
+	lv_obj_set_style_clip_corner(list, true, 0);
+	lv_obj_set_scrollable(list, false);
+	for (int i = 0; i < CHAPTER_POOL_SIZE; i++) {
+		lv_obj_t *row = lv_btn_create(list);
+		lv_obj_remove_style_all(row);
+		lv_obj_set_size(row, lv_pct(100), CHAPTER_ROW_H);
+		lv_obj_add_style(row, &theme_style_card, 0);
+		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
+		lv_obj_set_style_pad_hor(row, 18, 0);
+		lv_obj_set_style_pad_column(row, 10, 0);
+		lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+		lv_obj_set_style_border_width(row, 1, 0);
+		lv_obj_set_style_border_color(row, theme()->surface_pressed, 0);
+		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+		lv_obj_add_event_cb(row, chapter_pick_cb, LV_EVENT_CLICKED, NULL);
+		chapter_rows[i].button = row;
+		chapter_rows[i].index = -1;
+		chapter_rows[i].number = lv_label_create(row);
+		lv_obj_set_width(chapter_rows[i].number, 38);
+		lv_obj_set_style_text_font(chapter_rows[i].number, &font_ui_18, 0);
+		chapter_rows[i].title = lv_label_create(row);
+		lv_obj_set_flex_grow(chapter_rows[i].title, 1);
+		lv_obj_set_style_text_font(chapter_rows[i].title, &font_ui_22, 0);
+		lv_obj_set_style_max_height(chapter_rows[i].title, 56, 0);
+		lv_label_set_long_mode(chapter_rows[i].title, LV_LABEL_LONG_DOT);
+	}
+	chapter_list = list;
+	lv_obj_update_layout(menu_body);
+	lv_obj_scroll_to_y(menu_body, (int32_t)(selected > 2 ? selected - 2 : 0) * CHAPTER_ROW_H, LV_ANIM_OFF);
+	bind_chapters();
 }
 
 // ---------------------------------------------------------------------------
@@ -2365,33 +2402,51 @@ static void option_cb(lv_event_t *e) {
 // A round button in the user's accent colour with a glyph in it. The plus and
 // the minus of every stepper.
 static void stepper_button(lv_obj_t *parent, const char *glyph, int which, bool up) {
+	(void)glyph;
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, 56, 56);
-	lv_obj_add_style(btn, &theme_style_accent_bg, 0);
+	lv_obj_remove_style_all(btn);
+	lv_obj_set_size(btn, 60, 60);
+	// The design's round stepper: a raised disc with the minus or plus glyph.
+	lv_obj_add_style(btn, &theme_style_card_pressed, 0);
+	lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+	lv_obj_set_style_opa(btn, LV_OPA_70, LV_STATE_PRESSED);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_pad_all(btn, 0, 0);
 	lv_obj_add_event_cb(btn, option_cb, LV_EVENT_CLICKED, (void *)(intptr_t)((which << 1) | (up ? 1 : 0)));
 
-	lv_obj_t *label = lv_label_create(btn);
-	lv_label_set_text(label, glyph);
-	lv_obj_set_style_text_color(label, lv_color_white(), 0);
-	lv_obj_set_style_text_font(label, &font_ui_24, 0);
-	lv_obj_center(label);
+	lv_obj_t *icon = lv_image_create(btn);
+	lv_image_set_src(icon, up ? &icon_plus : &icon_minus);
+	lv_obj_add_style(icon, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+	lv_obj_center(icon);
 }
 
 // A row: the name, then minus, the value, plus.
 static void stepper_row(lv_obj_t *parent, int which) {
-	lv_obj_t *pills = NULL;
-	settingsrow_pills(parent, stepper_tags[which], &pills);
+	lv_obj_t *pills = lv_obj_create(parent);
+	lv_obj_remove_style_all(pills);
+	lv_obj_set_size(pills, lv_pct(100), 68);
+	lv_obj_set_scrollable(pills, false);
+	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_style_pad_left(pills, 8, 0);
+	lv_obj_t *name = lv_label_create(pills);
+	lv_label_set_text(name, tr(stepper_tags[which]));
+	lv_obj_add_style(name, &theme_style_text, 0);
+	lv_obj_set_style_text_font(name, &font_ui_22, 0);
+	lv_obj_set_flex_grow(name, 1);
+	lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+	lv_obj_set_style_pad_column(pills, 6, 0);
+	lv_obj_set_style_pad_right(pills, 4, 0);
 
 	stepper_button(pills, "−", which, false);
 
 	lv_obj_t *value = lv_label_create(pills);
 	lv_label_set_text(value, "0");
 	lv_obj_add_style(value, &theme_style_text, 0);
-	lv_obj_set_style_text_font(value, &font_ui_24, 0);
+	lv_obj_set_style_text_font(value, &font_ui_24_bold, 0);
 	lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_CENTER, 0);
 	// Wide enough for two digits at any of the four, so the plus does not walk
 	// left and right as the number changes under it.
@@ -2425,13 +2480,13 @@ static void build_font(void) {
 // ---------------------------------------------------------------------------
 
 static lv_obj_t *theme_pills[3];
-static lv_obj_t *turn_rows[3];
-static lv_obj_t *turn_ticks[3];
+static tabbar_t turn_tabs;
 
 static void theme_refresh(void) {
 	for (int i = 0; i < 3; i++) {
 		if (theme_pills[i]) {
-			settingsrow_pill_active(theme_pills[i], i == (int)opt_theme);
+			lv_obj_set_style_border_color(theme_pills[i], theme()->accent, 0);
+			lv_obj_set_style_border_width(theme_pills[i], i == (int)opt_theme ? 3 : 0, 0);
 		}
 	}
 }
@@ -2445,14 +2500,7 @@ static void theme_cb(lv_event_t *e) {
 }
 
 static void turn_refresh(void) {
-	for (int i = 0; i < 3; i++) {
-		if (turn_ticks[i]) {
-			lv_obj_set_style_image_opa(turn_ticks[i], i == (int)opt_turn ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-		}
-		if (turn_rows[i]) {
-			lv_obj_set_style_bg_opa(turn_rows[i], i == (int)opt_turn ? LV_OPA_20 : LV_OPA_TRANSP, 0);
-		}
-	}
+	tabbar_set_active(&turn_tabs, (int)opt_turn);
 }
 
 static void turn_cb(lv_event_t *e) {
@@ -2500,220 +2548,177 @@ static void turn_cb(lv_event_t *e) {
 	show_page();
 }
 
-// One way of turning a page: the icon, its name beside it, and a tick on the
-// right for the one in use.
-static void turn_row(lv_obj_t *parent, int index, const lv_image_dsc_t *icon, const char *tag) {
-	lv_obj_t *row = lv_btn_create(parent);
-	lv_obj_set_width(row, lv_pct(100));
-	lv_obj_set_height(row, 76);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_bg_color(row, theme()->accent, 0);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
+static lv_obj_t *reader_row(lv_obj_t *parent) {
+	lv_obj_t *row = lv_obj_create(parent);
+	lv_obj_remove_style_all(row);
+	lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(row, 14, 0);
-	lv_obj_add_event_cb(row, turn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
-
-	lv_obj_t *glyph = lv_image_create(row);
-	lv_image_set_src(glyph, icon);
-	lv_obj_set_style_image_recolor(glyph, theme()->text_primary, 0);
-	lv_obj_set_style_image_recolor_opa(glyph, LV_OPA_COVER, 0);
-
-	lv_obj_t *name = lv_label_create(row);
-	lv_label_set_text(name, tr(tag));
-	lv_obj_add_style(name, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name, &font_ui_22, 0);
-	lv_obj_set_flex_grow(name, 1);
-
-	lv_obj_t *tick = lv_image_create(row);
-	lv_image_set_src(tick, &icon_check);
-	lv_obj_set_style_image_recolor(tick, theme()->accent, 0);
-	lv_obj_set_style_image_recolor_opa(tick, LV_OPA_COVER, 0);
-
-	turn_rows[index] = row;
-	turn_ticks[index] = tick;
+	return row;
 }
 
-static void build_theme(void) {
-	lv_obj_t *pills = NULL;
-	settingsrow_pills(menu_body, "ebookreader_reading_theme", &pills);
-	theme_pills[0] = settingsrow_pill(pills, "ebookreader_theme_paper", THEME_LIGHT, theme_cb);
-	theme_pills[1] = settingsrow_pill(pills, "ebookreader_theme_sepia", THEME_SEPIA, theme_cb);
-	theme_pills[2] = settingsrow_pill(pills, "ebookreader_theme_night", THEME_DARK, theme_cb);
+static lv_obj_t *reader_icon_button(lv_obj_t *parent, const lv_image_dsc_t *icon,
+								   lv_event_cb_t cb, intptr_t data, lv_obj_t **image_out) {
+	lv_obj_t *button = lv_btn_create(parent);
+	lv_obj_remove_style_all(button);
+	lv_obj_set_size(button, 66, 64);
+	lv_obj_set_style_radius(button, 12, 0);
+	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_opa(button, LV_OPA_40, LV_STATE_DISABLED);
+	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, (void *)data);
+	lv_obj_t *image = lv_image_create(button);
+	lv_image_set_src(image, icon);
+	lv_obj_set_size(image, 32, 32);
+	lv_image_set_inner_align(image, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_add_style(image, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(image, LV_OPA_COVER, 0);
+	lv_obj_center(image);
+	if (image_out) {
+		*image_out = image;
+	}
+	return button;
+}
+
+static lv_obj_t *reader_label(lv_obj_t *parent, const char *tag, const lv_font_t *font) {
+	lv_obj_t *label = lv_label_create(parent);
+	lv_obj_add_style(label, &theme_style_text, 0);
+	lv_obj_set_style_text_font(label, font, 0);
+	lv_label_set_text(label, tr(tag));
+	return label;
+}
+
+static void build_theme_choices(void) {
+	static const char *const tags[] = {"ebookreader_theme_paper", "ebookreader_theme_sepia", "ebookreader_theme_night"};
+	static const uint32_t backgrounds[] = {0xFBFBF8, 0xF4E8D4, 0x14140F};
+	static const uint32_t foregrounds[] = {0x1A1A18, 0x2B2218, 0xC8C6BE};
+	lv_obj_t *row = reader_row(menu_body);
+	lv_obj_set_style_pad_column(row, 8, 0);
+	for (int i = 0; i < 3; i++) {
+		lv_obj_t *button = lv_btn_create(row);
+		lv_obj_remove_style_all(button);
+		lv_obj_set_size(button, 0, 76);
+		lv_obj_set_flex_grow(button, 1);
+		lv_obj_set_style_radius(button, 14, 0);
+		lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+		lv_obj_set_style_bg_color(button, lv_color_hex(backgrounds[i]), 0);
+		lv_obj_add_event_cb(button, theme_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+		lv_obj_t *text = reader_label(button, tags[i], &font_ui_20);
+		lv_obj_set_style_text_color(text, lv_color_hex(foregrounds[i]), 0);
+		lv_obj_center(text);
+		theme_pills[i] = button;
+	}
 	theme_refresh();
+}
 
-	lv_obj_t *heading = lv_label_create(menu_body);
-	lv_label_set_text(heading, tr("ebookreader_page_turn"));
-	lv_obj_add_style(heading, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(heading, &font_ui_20, 0);
-	lv_obj_set_style_margin_top(heading, 10, 0);
-
-	turn_row(menu_body, TURN_INSTANT, &icon_ebook_turn_fast, "ebookreader_turn_instant");
-	turn_row(menu_body, TURN_SLIDE, &icon_ebook_turn_slide, "ebookreader_turn_slide");
-	turn_row(menu_body, TURN_VERTICAL, &icon_ebook_turn_vertical, "ebookreader_turn_vertical");
+static void build_turn_choices(void) {
+	// A section label, in the design's small capitals.
+	lv_obj_t *turn_label = reader_label(menu_body, "ebookreader_page_turn", &font_ui_16_bold);
+	settingsrow_upper_text(turn_label, tr("ebookreader_page_turn"));
+	lv_obj_remove_style(turn_label, &theme_style_text, 0);
+	lv_obj_add_style(turn_label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_letter_space(turn_label, 1, 0);
+	lv_obj_set_style_pad_left(turn_label, 8, 0);
+	lv_obj_set_style_pad_top(turn_label, 8, 0);
+	tabbar_create(&turn_tabs, menu_body);
+	tabbar_add(&turn_tabs, "ebookreader_turn_instant", turn_cb, (void *)(intptr_t)TURN_INSTANT);
+	tabbar_add(&turn_tabs, "ebookreader_turn_slide", turn_cb, (void *)(intptr_t)TURN_SLIDE);
+	tabbar_add(&turn_tabs, "ebookreader_turn_vertical", turn_cb, (void *)(intptr_t)TURN_VERTICAL);
+	tabbar_use_neutral_selection(&turn_tabs);
 	turn_refresh();
 }
 
-// ---------------------------------------------------------------------------
-// building the menu
-// ---------------------------------------------------------------------------
-
-// One of the three things on the bar: the icon above, its name under it.
-static void bar_button(lv_obj_t *parent, const lv_image_dsc_t *icon, const char *tag, section_t which) {
-	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, 0, LV_SIZE_CONTENT);
-	lv_obj_set_flex_grow(btn, 1);
-	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
-	lv_obj_add_style(btn, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(btn, 14, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_pad_ver(btn, 14, 0);
-	lv_obj_set_style_pad_hor(btn, 4, 0);
-	lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(btn, 8, 0);
-	lv_obj_add_event_cb(btn, section_open, LV_EVENT_CLICKED, (void *)(intptr_t)which);
-
-	lv_obj_t *glyph = lv_image_create(btn);
-	lv_image_set_src(glyph, icon);
-	lv_obj_set_style_image_recolor(glyph, theme()->text_primary, 0);
-	lv_obj_set_style_image_recolor_opa(glyph, LV_OPA_COVER, 0);
-	remember_glyph(glyph);
-
-	lv_obj_t *name = lv_label_create(btn);
-	lv_obj_set_width(name, lv_pct(100));
-	lv_obj_set_height(name, 24);
-	lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-	lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
-	lv_label_set_text(name, tr(tag));
-	lv_obj_add_style(name, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name, &font_ui_18, 0);
+static void build_reader_header(void) {
+	reader_header = reader_row(ebookreader_screen);
+	lv_obj_set_height(reader_header, READER_HEADER_H);
+	lv_obj_set_style_bg_opa(reader_header, LV_OPA_COVER, 0);
+	lv_obj_set_style_border_side(reader_header, LV_BORDER_SIDE_BOTTOM, 0);
+	lv_obj_set_style_border_width(reader_header, 1, 0);
+	lv_obj_set_style_border_opa(reader_header, LV_OPA_20, 0);
+	reader_icon_button(reader_header, &icon_chevron_left, close_book_cb, 0, &header_icons[0]);
+	lv_obj_t *text = lv_obj_create(reader_header);
+	lv_obj_remove_style_all(text);
+	lv_obj_set_height(text, LV_SIZE_CONTENT);
+	lv_obj_set_flex_grow(text, 1);
+	lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_scrollable(text, false);
+	reader_title = reader_label(text, "", &font_ui_22_bold);
+	reader_chapter = reader_label(text, "", &font_ui_16);
+	lv_obj_set_width(reader_title, lv_pct(100));
+	lv_obj_set_width(reader_chapter, lv_pct(100));
+	lv_obj_set_height(reader_title, lv_font_get_line_height(&font_ui_22_bold));
+	lv_obj_set_height(reader_chapter, lv_font_get_line_height(&font_ui_16));
+	lv_label_set_long_mode(reader_title, LV_LABEL_LONG_DOT);
+	lv_label_set_long_mode(reader_chapter, LV_LABEL_LONG_DOT);
+	reader_icon_button(reader_header, &icon_ebook_chapter, section_open, SECTION_CHAPTERS, &header_icons[1]);
+	reader_icon_button(reader_header, &icon_bookmark, bookmark_button_cb, 0, &header_icons[2]);
+	reader_icon_button(reader_header, &icon_ebook_font, section_open, SECTION_TEXT, &header_icons[3]);
 }
 
 static void build_menu(gui_config_t *cfg) {
-	// The same veil the pop-overs put over a page, for the same reason: what is
-	// underneath stays visible and every tap that misses the menu closes it.
 	menu_veil = lv_obj_create(ebookreader_screen);
 	lv_obj_remove_style_all(menu_veil);
 	lv_obj_set_size(menu_veil, cfg->screen_width, cfg->screen_height);
-	lv_obj_set_style_bg_color(menu_veil, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(menu_veil, LV_OPA_60, 0);
 	lv_obj_set_clickable(menu_veil, true);
 	lv_obj_set_scrollable(menu_veil, false);
 	lv_obj_add_event_cb(menu_veil, menu_veil_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_set_hidden(menu_veil, true);
 
-	// --- the bar along the bottom
-	menu_bar = lv_obj_create(menu_veil);
-	lv_obj_add_style(menu_bar, &theme_style_panel, 0);
-	lv_obj_set_size(menu_bar, cfg->screen_width - 2 * MENU_INSET, LV_SIZE_CONTENT);
-	lv_obj_align(menu_bar, LV_ALIGN_BOTTOM_MID, 0, -MENU_INSET);
-	lv_obj_set_style_radius(menu_bar, 18, 0);
-	lv_obj_set_style_border_width(menu_bar, 0, 0);
-	lv_obj_set_style_shadow_width(menu_bar, 0, 0);
-	lv_obj_set_style_pad_all(menu_bar, 10, 0);
-	lv_obj_set_flex_flow(menu_bar, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(menu_bar, 8, 0);
-	lv_obj_set_scrollable(menu_bar, false);
-
-	lv_obj_t *icons = lv_obj_create(menu_bar);
-	lv_obj_remove_style_all(icons);
-	lv_obj_set_size(icons, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_flex_flow(icons, LV_FLEX_FLOW_ROW);
-	lv_obj_set_scrollable(icons, false);
-	bar_button(icons, &icon_ebook_chapter, "chapters", SECTION_CHAPTERS);
-	bar_button(icons, &icon_ebook_font, "ebookreader_font_settings", SECTION_FONT);
-	bar_button(icons, &icon_ebook_theme, "ebookreader_book_theme", SECTION_THEME);
-	bar_button(icons, &icon_ebook_audio, "ebookaudio_title", SECTION_AUDIO);
-
-	// Under the three, separated: leaving is not a fourth thing to look at
-	// while reading, but it has to be somewhere and this is the only panel the
-	// reader has.
-	lv_obj_t *close_row = lv_btn_create(menu_bar);
-	lv_obj_set_size(close_row, lv_pct(100), 68);
-	// Same reason as the card below: on the light theme a card on a panel is
-	// white on white, and the one row that has to be found is the one that is
-	// not there.
-	lv_obj_add_style(close_row, &theme_style_screen, 0);
-	lv_obj_add_style(close_row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(close_row, 12, 0);
-	lv_obj_set_style_border_width(close_row, 0, 0);
-	lv_obj_set_style_shadow_width(close_row, 0, 0);
-	lv_obj_add_event_cb(close_row, close_book_cb, LV_EVENT_CLICKED, NULL);
-
-	lv_obj_t *close_label = lv_label_create(close_row);
-	lv_label_set_text(close_label, tr("ebookreader_close_the_book"));
-	lv_obj_add_style(close_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(close_label, &font_ui_22, 0);
-	lv_obj_center(close_label);
-
-	// --- the card each of the three opens
 	menu_card = lv_obj_create(menu_veil);
-	// The background of a page and not of a panel, because what goes inside are
-	// setting rows, and a setting row is drawn as a card: on the light theme
-	// card and panel are the same white, and the rows vanish into the card they
-	// sit on. Every other page in the player has that same relationship --
-	// cards on the page colour -- so this is the shape, not a workaround.
+	lv_obj_remove_style_all(menu_card);
 	lv_obj_add_style(menu_card, &theme_style_screen, 0);
-	lv_obj_set_size(menu_card, cfg->screen_width - 2 * MENU_INSET, cfg->screen_height * 3 / 4);
-	lv_obj_center(menu_card);
-	lv_obj_set_style_radius(menu_card, 18, 0);
-	lv_obj_set_style_border_width(menu_card, 0, 0);
-	lv_obj_set_style_shadow_width(menu_card, 0, 0);
+	lv_obj_set_size(menu_card, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_align(menu_card, LV_ALIGN_BOTTOM_MID, 0, 0);
 	lv_obj_set_style_pad_all(menu_card, 12, 0);
+	lv_obj_set_style_pad_row(menu_card, 6, 0);
 	lv_obj_set_flex_flow(menu_card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(menu_card, 10, 0);
-	// Only the body scrolls. Left scrollable the card scrolls too, and the
-	// heading -- which carries the way back to the bar -- slides off the top.
+	lv_obj_set_flex_align(menu_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(menu_card, false);
-	lv_obj_set_hidden(menu_card, true);
+	lv_obj_set_clickable(menu_card, true);
 
-	lv_obj_t *header = lv_obj_create(menu_card);
-	lv_obj_remove_style_all(header);
-	lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(header, 10, 0);
-	lv_obj_set_scrollable(header, false);
+	menu_hint = lv_obj_create(menu_card);
+	lv_obj_remove_style_all(menu_hint);
+	lv_obj_set_size(menu_hint, 56, 6);
+	lv_obj_set_style_radius(menu_hint, LV_RADIUS_CIRCLE, 0);
+	lv_obj_add_style(menu_hint, &theme_style_card_pressed, 0);
+	lv_obj_set_style_bg_opa(menu_hint, LV_OPA_COVER, 0);
+	lv_obj_set_style_margin_bottom(menu_hint, 4, 0);
 
-	lv_obj_t *back = lv_btn_create(header);
-	lv_obj_set_size(back, 56, 56);
-	lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
-	lv_obj_add_style(back, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_border_width(back, 0, 0);
-	lv_obj_set_style_shadow_width(back, 0, 0);
-	lv_obj_add_event_cb(back, section_back_cb, LV_EVENT_CLICKED, NULL);
-
-	lv_obj_t *chev = lv_image_create(back);
-	lv_image_set_src(chev, &icon_chevron_left);
-	lv_obj_center(chev);
-	lv_obj_set_style_image_recolor(chev, theme()->text_primary, 0);
-	lv_obj_set_style_image_recolor_opa(chev, LV_OPA_COVER, 0);
-	remember_glyph(chev);
-
-	menu_heading = lv_label_create(header);
-	lv_label_set_text(menu_heading, "");
-	lv_obj_add_style(menu_heading, &theme_style_text, 0);
-	lv_obj_set_style_text_font(menu_heading, &font_ui_24, 0);
+	menu_header = reader_row(menu_card);
+	reader_icon_button(menu_header, &icon_chevron_left, section_back_cb, 0, NULL);
+	lv_obj_t *menu_text = lv_obj_create(menu_header);
+	lv_obj_remove_style_all(menu_text);
+	lv_obj_set_height(menu_text, LV_SIZE_CONTENT);
+	lv_obj_set_flex_grow(menu_text, 1);
+	lv_obj_set_flex_flow(menu_text, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_scrollable(menu_text, false);
+	menu_heading = reader_label(menu_text, "", &font_ui_28_bold);
+	menu_subtitle = reader_label(menu_text, "", &font_ui_16);
+	lv_obj_add_style(menu_subtitle, &theme_style_text_dim, 0);
+	lv_obj_set_width(menu_subtitle, lv_pct(100));
+	lv_obj_set_height(menu_subtitle, lv_font_get_line_height(&font_ui_16));
+	lv_label_set_long_mode(menu_subtitle, LV_LABEL_LONG_DOT);
+	menu_mark_button = reader_icon_button(menu_header, &icon_bookmark, section_open, SECTION_MARKS, NULL);
 
 	menu_body = lv_obj_create(menu_card);
 	lv_obj_remove_style_all(menu_body);
-	// Whatever the heading leaves, not the whole card: a full height here is a
-	// body taller than the room it sits in, which is what makes a card scroll
-	// when only its list should.
 	lv_obj_set_width(menu_body, lv_pct(100));
 	lv_obj_set_flex_grow(menu_body, 1);
 	lv_obj_set_flex_flow(menu_body, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(menu_body, 8, 0);
-	lv_obj_set_style_pad_right(menu_body, 6, 0);
-	// The rest of a long chapter list arrives as it is scrolled to; the handler
-	// leaves every other section alone.
+	lv_obj_set_style_pad_row(menu_body, 5, 0);
+	lv_obj_set_scroll_dir(menu_body, LV_DIR_VER);
 	lv_obj_add_event_cb(menu_body, chapters_scrolled_cb, LV_EVENT_SCROLL, NULL);
+
+	menu_done = lv_btn_create(menu_card);
+	lv_obj_remove_style_all(menu_done);
+	lv_obj_set_size(menu_done, lv_pct(100), 64);
+	lv_obj_set_style_radius(menu_done, LV_RADIUS_CIRCLE, 0);
+	lv_obj_add_style(menu_done, &theme_style_accent_bg, 0);
+	lv_obj_add_event_cb(menu_done, menu_veil_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *done = reader_label(menu_done, "done", &font_ui_22_bold);
+	lv_obj_add_style(done, &theme_style_accent_bg, 0);
+	lv_obj_set_style_bg_opa(done, LV_OPA_TRANSP, 0);
+	lv_obj_center(done);
 }
 
 // ---------------------------------------------------------------------------
@@ -2722,6 +2727,8 @@ static void build_menu(gui_config_t *cfg) {
 // ---------------------------------------------------------------------------
 
 static lv_obj_t *audio_strip, *audio_strip_time, *audio_strip_play;
+static lv_obj_t *audio_strip_title, *audio_strip_speed, *audio_strip_button;
+static lv_obj_t *audio_panel_elapsed, *audio_panel_total;
 static lv_obj_t *audio_panel_time, *audio_panel_play, *audio_panel_slider, *audio_panel_speed;
 static lv_obj_t *audio_panel_previous, *audio_panel_next;
 static lv_timer_t *audio_timer;
@@ -2729,6 +2736,7 @@ static lv_timer_t *audio_timer;
 static void audio_forget_widgets(void) {
 	audio_panel_time = audio_panel_play = audio_panel_slider = audio_panel_speed = NULL;
 	audio_panel_previous = audio_panel_next = NULL;
+	audio_panel_elapsed = audio_panel_total = NULL;
 }
 
 static void audio_refresh(void) {
@@ -2737,20 +2745,29 @@ static void audio_refresh(void) {
 	bool available = book && chapter_has_audio();
 	if (audio_timer) {
 		bool active = available && lv_screen_active() == ebookreader_screen;
-		if (active && lv_timer_get_paused(audio_timer))
+		bool running = ebookaudio_active() || ebookaudio_loading();
+		if (active && running) {
 			lv_timer_resume(audio_timer);
-		else if (!active)
+		} else {
 			lv_timer_pause(audio_timer);
+		}
 	}
-	lv_obj_set_hidden(audio_strip, !available);
-	if (!available)
+	lv_obj_set_hidden(audio_strip, !available || !chrome_visible);
+	if (!available || (!chrome_visible && !audio_panel_time)) {
 		return;
-	lv_obj_align(audio_strip, LV_ALIGN_BOTTOM_MID, 0, -(ebookbar_height() + 10));
-	lv_obj_set_style_bg_color(audio_strip, ink_colour(), 0);
-	lv_obj_set_style_text_color(audio_strip_time, ink_colour(), 0);
-	lv_image_set_src(audio_strip_play, ebookaudio_playing() ? &icon_pause_small : &icon_play_small);
-	lv_obj_set_style_image_recolor(audio_strip_play, ink_colour(), 0);
-	lv_obj_set_style_image_recolor_opa(audio_strip_play, LV_OPA_COVER, 0);
+	}
+	const lv_image_dsc_t *icon = ebookaudio_playing() ? &icon_pause_small : &icon_play_small;
+	if (lv_image_get_src(audio_strip_play) != icon) {
+		lv_image_set_src(audio_strip_play, icon);
+	}
+	if (audio_panel_play && lv_image_get_src(audio_panel_play) != icon) {
+		lv_image_set_src(audio_panel_play, icon);
+	}
+	char speed[16];
+	snprintf(speed, sizeof(speed), "%d.%d×", ebookaudio_speed() / 10, ebookaudio_speed() % 10);
+	if (strcmp(lv_label_get_text(audio_strip_speed), speed) != 0) {
+		lv_label_set_text(audio_strip_speed, speed);
+	}
 	double at = 0, duration = 0;
 	ebookaudio_progress(&at, &duration);
 	char text[128];
@@ -2765,12 +2782,27 @@ static void audio_refresh(void) {
 		snprintf(text, sizeof(text), "%u/%u  %02u:%02u / %02u:%02u", ebook_audio_cue_count(book) ? ebookaudio_cue_index() + 1 : ebookaudio_index() + 1, ebook_audio_cue_count(book) ? ebook_audio_cue_count(book) : ebook_audio_count(book), (unsigned)at / 60, (unsigned)at % 60, (unsigned)duration / 60, (unsigned)duration % 60);
 	if (strcmp(lv_label_get_text(audio_strip_time), text))
 		lv_label_set_text(audio_strip_time, text);
-	if (audio_panel_time && strcmp(lv_label_get_text(audio_panel_time), text))
-		lv_label_set_text(audio_panel_time, text);
-	if (audio_panel_play) {
-		const char *label = tr(ebookaudio_playing() ? "ebookaudio_pause" : "ebookaudio_play");
-		if (strcmp(lv_label_get_text(audio_panel_play), label))
-			lv_label_set_text(audio_panel_play, label);
+	if (audio_panel_time) {
+		if (!error && !ebookaudio_loading() && ebook_audio_count(book)) {
+			uint32_t cues = ebook_audio_cue_count(book);
+			uint32_t index = cues ? ebookaudio_cue_index() : ebookaudio_index();
+			snprintf(text, sizeof(text), tr(cues ? "ebookaudio_sentence_position" : "ebookaudio_clip_position"),
+					 index == UINT32_MAX ? 1u : index + 1u, cues ? cues : ebook_audio_count(book));
+		}
+		if (strcmp(lv_label_get_text(audio_panel_time), text) != 0) {
+			lv_label_set_text(audio_panel_time, text);
+		}
+	}
+	if (audio_panel_elapsed && audio_panel_total) {
+		lv_obj_t *labels[] = {audio_panel_elapsed, audio_panel_total};
+		double times[] = {at, duration};
+		for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++) {
+			unsigned seconds = times[i] > 0 ? (unsigned)times[i] : 0;
+			snprintf(text, sizeof(text), "%u:%02u", seconds / 60, seconds % 60);
+			if (strcmp(lv_label_get_text(labels[i]), text) != 0) {
+				lv_label_set_text(labels[i], text);
+			}
+		}
 	}
 	uint32_t index = ebook_audio_cue_count(book) ? ebookaudio_cue_index() : ebookaudio_index();
 	uint32_t count = ebook_audio_cue_count(book) ? ebook_audio_cue_count(book) : ebook_audio_count(book);
@@ -2787,12 +2819,14 @@ static void audio_refresh(void) {
 			lv_obj_remove_state(audio_panel_next, LV_STATE_DISABLED);
 	}
 	if (audio_panel_speed) {
-		snprintf(text, sizeof(text), "%s: %d.%d×", tr("ebookaudio_speed"), ebookaudio_speed() / 10, ebookaudio_speed() % 10);
-		if (strcmp(lv_label_get_text(audio_panel_speed), text))
-			lv_label_set_text(audio_panel_speed, text);
+		if (strcmp(lv_label_get_text(audio_panel_speed), speed))
+			lv_label_set_text(audio_panel_speed, speed);
 	}
 	if (audio_panel_slider && !lv_slider_is_dragged(audio_panel_slider)) {
-		lv_slider_set_value(audio_panel_slider, duration > 0 ? (int)(1000 * at / duration) : 0, LV_ANIM_OFF);
+		int position = duration > 0 ? (int)(1000 * at / duration) : 0;
+		if (lv_slider_get_value(audio_panel_slider) != position) {
+			lv_slider_set_value(audio_panel_slider, position, LV_ANIM_OFF);
+		}
 	}
 }
 
@@ -2960,17 +2994,27 @@ static void build_audio(void) {
 		lv_obj_set_size(audio_panel_slider, lv_pct(94), 10);
 		lv_obj_set_style_margin_ver(audio_panel_slider, 16, 0);
 		lv_slider_set_range(audio_panel_slider, 0, 1000);
+		lv_obj_add_style(audio_panel_slider, &theme_style_slider_track, LV_PART_MAIN);
+		lv_obj_add_style(audio_panel_slider, &theme_style_accent_bg, LV_PART_INDICATOR);
+		lv_obj_set_style_bg_color(audio_panel_slider, theme()->text_primary, LV_PART_KNOB);
+		lv_obj_set_style_pad_all(audio_panel_slider, 8, LV_PART_KNOB);
+		theme_apply_slider_knob(audio_panel_slider);
+		lv_obj_set_ext_click_area(audio_panel_slider, 18);
 		lv_obj_add_event_cb(audio_panel_slider, audio_slider_cb, LV_EVENT_RELEASED, NULL);
+		lv_obj_t *timing = audio_button_row(menu_body);
+		lv_obj_set_flex_align(timing, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+		audio_panel_elapsed = reader_label(timing, "", &font_ui_18);
+		audio_panel_total = reader_label(timing, "", &font_ui_18);
 		lv_obj_t *row = audio_button_row(menu_body);
-		audio_text_button(row, "-10s", audio_skip_cb, -10);
-		audio_panel_play = audio_text_button(row, "ebookaudio_play", audio_toggle_cb, 0);
-		audio_text_button(row, "+10s", audio_skip_cb, 10);
+		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+		audio_text_button(row, "−10", audio_skip_cb, -10);
+		audio_panel_previous = reader_icon_button(row, &icon_skip_back, audio_step_cb, -1, NULL);
+		reader_icon_button(row, &icon_play_small, audio_toggle_cb, 0, &audio_panel_play);
+		audio_panel_next = reader_icon_button(row, &icon_skip_forward, audio_step_cb, 1, NULL);
+		audio_text_button(row, "+10", audio_skip_cb, 10);
 		row = audio_button_row(menu_body);
-		const char *previous = ebook_audio_cue_count(book) ? "ebookaudio_previous_sentence" : "ebookaudio_previous";
-		const char *next = ebook_audio_cue_count(book) ? "ebookaudio_next_sentence" : "ebookaudio_next";
-		audio_panel_previous = lv_obj_get_parent(audio_text_button(row, previous, audio_step_cb, -1));
-		audio_panel_next = lv_obj_get_parent(audio_text_button(row, next, audio_step_cb, 1));
-		row = audio_button_row(menu_body);
+		lv_obj_t *caption = reader_label(row, "ebookaudio_speed", &font_ui_20);
+		lv_obj_set_flex_grow(caption, 1);
 		audio_text_button(row, "−", audio_speed_cb, -1);
 		audio_panel_speed = lv_label_create(row);
 		lv_obj_set_flex_grow(audio_panel_speed, 1);
@@ -2989,64 +3033,78 @@ static void build_audio(void) {
 	audio_refresh();
 }
 
-static void audio_panel_open_cb(lv_event_t *e);
-
 static void audio_open_cb(lv_event_t *e) {
 	(void)e;
-	menu_open();
-	audio_panel_open_cb(NULL);
-}
-
-static void audio_panel_open_cb(lv_event_t *e) {
-	(void)e;
-	audio_forget_widgets();
-	lv_obj_clean(menu_body);
-	chapters_built = 0;
-	menu_section = SECTION_AUDIO;
-	lv_label_set_text(menu_heading, tr("ebookaudio_title"));
-	build_audio();
-	lv_obj_set_hidden(menu_bar, true);
-	lv_obj_set_hidden(menu_card, false);
+	show_section(SECTION_AUDIO);
 }
 
 static void build_audio_strip(gui_config_t *cfg) {
-	audio_strip = lv_obj_create(ebookreader_screen);
-	lv_obj_remove_style_all(audio_strip);
-	lv_obj_set_size(audio_strip, cfg->screen_width - 16, 56);
-	lv_obj_set_style_bg_opa(audio_strip, LV_OPA_10, 0);
-	lv_obj_set_style_radius(audio_strip, 12, 0);
-	lv_obj_set_style_pad_all(audio_strip, 4, 0);
-	lv_obj_set_style_pad_column(audio_strip, 8, 0);
-	lv_obj_set_flex_flow(audio_strip, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(audio_strip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_scrollable(audio_strip, false);
+	audio_strip = reader_row(ebookreader_screen);
+	lv_obj_set_size(audio_strip, cfg->screen_width, READER_AUDIO_H);
+	lv_obj_set_style_bg_opa(audio_strip, LV_OPA_COVER, 0);
+	lv_obj_set_style_pad_hor(audio_strip, 16, 0);
+	lv_obj_set_style_pad_column(audio_strip, 12, 0);
 	lv_obj_set_hidden(audio_strip, true);
+	audio_strip_button = reader_icon_button(audio_strip, &icon_play_small, audio_toggle_cb, 0, &audio_strip_play);
+	lv_obj_set_style_radius(audio_strip_button, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_bg_opa(audio_strip_button, LV_OPA_COVER, 0);
 	lv_obj_t *open = lv_btn_create(audio_strip);
-	lv_obj_set_size(open, 80, 48);
-	lv_obj_set_style_bg_opa(open, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_shadow_width(open, 0, 0);
+	lv_obj_remove_style_all(open);
+	lv_obj_set_height(open, 68);
+	lv_obj_set_flex_grow(open, 1);
+	lv_obj_set_flex_flow(open, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(open, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 	lv_obj_add_event_cb(open, audio_open_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_t *label = lv_label_create(open);
-	lv_label_set_text(label, tr("ebookaudio_title"));
-	lv_obj_set_style_text_font(label, &font_ui_18, 0);
-	lv_obj_center(label);
-	audio_strip_time = lv_label_create(audio_strip);
-	lv_obj_set_flex_grow(audio_strip_time, 1);
-	lv_obj_set_width(audio_strip_time, 200);
-	lv_obj_set_style_text_font(audio_strip_time, &font_ui_18, 0);
+	audio_strip_title = reader_label(open, "ebookaudio_title", &font_ui_20_bold);
+	audio_strip_time = reader_label(open, "", &font_ui_16);
+	lv_obj_set_width(audio_strip_time, lv_pct(100));
+	lv_obj_set_height(audio_strip_time, lv_font_get_line_height(&font_ui_16));
 	lv_label_set_long_mode(audio_strip_time, LV_LABEL_LONG_DOT);
-	lv_obj_t *play = lv_btn_create(audio_strip);
-	lv_obj_set_size(play, 56, 48);
-	lv_obj_set_style_bg_opa(play, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_shadow_width(play, 0, 0);
-	lv_obj_add_event_cb(play, audio_toggle_cb, LV_EVENT_CLICKED, NULL);
-	audio_strip_play = lv_image_create(play);
-	lv_image_set_src(audio_strip_play, &icon_play_small);
-	lv_obj_center(audio_strip_play);
+
+	lv_obj_t *speed = lv_btn_create(audio_strip);
+	lv_obj_remove_style_all(speed);
+	lv_obj_set_size(speed, 72, 56);
+	lv_obj_set_style_radius(speed, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_border_width(speed, 1, 0);
+	lv_obj_add_event_cb(speed, audio_open_cb, LV_EVENT_CLICKED, NULL);
+	audio_strip_speed = reader_label(speed, "", &font_ui_18);
+	lv_obj_center(audio_strip_speed);
 	audio_timer = lv_timer_create(audio_timer_cb, 100, NULL);
 	lv_timer_pause(audio_timer);
 	// This timer drives playback as well as the controls; never pause it
 	// merely because the screen is off. reader_unloaded_cb stops it.
+}
+
+static void reader_chrome_layout(void) {
+	int height = (int)g_cfg->screen_height - bar_space();
+	int y = reader_header_height();
+	lv_obj_set_y(page_box, y);
+	lv_obj_set_y(page_spare, y);
+	lv_obj_set_height(page_box, height);
+	lv_obj_set_height(page_spare, height);
+	lv_obj_set_height(count_box, height);
+	lv_obj_set_hidden(reader_header, !chrome_visible);
+	lv_obj_set_hidden(status_bar.root, !chrome_visible);
+	lv_obj_align(audio_strip, LV_ALIGN_BOTTOM_MID, 0, -(ebookbar_height() + 6));
+	lv_obj_set_style_bg_color(audio_strip, lv_color_mix(ink_colour(), paper_colour(), 16), 0);
+	lv_obj_set_style_bg_color(audio_strip_button, ink_colour(), 0);
+	lv_obj_set_style_image_recolor(audio_strip_play, paper_colour(), 0);
+	lv_obj_set_style_text_color(audio_strip_title, ink_colour(), 0);
+	lv_obj_set_style_text_color(audio_strip_time, ink_colour(), 0);
+	lv_obj_set_style_text_color(audio_strip_speed, ink_colour(), 0);
+	lv_obj_set_style_border_color(lv_obj_get_parent(audio_strip_speed), ink_colour(), 0);
+	audio_refresh();
+}
+
+static void toggle_reader_chrome(void) {
+	if (!book || turning) {
+		return;
+	}
+	chrome_visible = !chrome_visible;
+	reader_chrome_layout();
+	page_stack_depth = 0;
+	page_number_recount();
+	show_page();
 }
 
 // The page of a book wants the whole panel: the clock and the battery are
@@ -3088,8 +3146,6 @@ static void reader_unloaded_cb(lv_event_t *e) {
 		stepper_values[i] = NULL;
 	}
 	theme_pills[0] = theme_pills[1] = theme_pills[2] = NULL;
-	turn_rows[0] = turn_rows[1] = turn_rows[2] = NULL;
-	turn_ticks[0] = turn_ticks[1] = turn_ticks[2] = NULL;
 	ebookfonts_close();
 	ebookaudio_detach();
 	if (book) {
@@ -3115,6 +3171,20 @@ void ebookreader_release_storage(void) {
 static bool want_position;
 static uint32_t want_spine, want_block, want_offset;
 
+bool ebookreader_last(char *path, size_t size, int *chapter) {
+	const char *last = config_store_get(config_ebook_store(), "ebook", "last_path", "");
+	if (!last[0]) {
+		return false;
+	}
+	snprintf(path, size, "%s", last);
+	if (chapter) {
+		uint32_t spine, block, offset;
+		position_load(last, &spine, &block, &offset);
+		*chapter = (int)spine + 1;
+	}
+	return true;
+}
+
 void ebookreader_open_at(const char *path, uint32_t spine, uint32_t block, uint32_t offset) {
 	want_position = true;
 	want_spine = spine;
@@ -3139,6 +3209,9 @@ void ebookreader_open(const char *path) {
 		gui_notify_popup("ebookreader_open_failed");
 		return;
 	}
+	// Remembered for the shelf's "Continue" card; written out with the next
+	// position.
+	config_store_set(config_ebook_store(), "ebook", "last_path", path);
 
 	opt_size = (int)config_store_get_int(config_ebook_store(), "ebook", "font_size", 20);
 	opt_line = (int)config_store_get_int(config_ebook_store(), "ebook", "line_space", 4);
@@ -3163,9 +3236,9 @@ void ebookreader_open(const char *path) {
 	// The strip may have grown or shrunk since the last book: its options live
 	// on their own page, reached from the shelf, so they can change while no
 	// book is open.
-	int32_t box_h = (int32_t)g_cfg->screen_height - bar_space();
-	lv_obj_set_height(page_box, box_h);
-	lv_obj_set_height(page_spare, box_h);
+	chrome_visible = true;
+	lv_label_set_text(reader_title, ebook_title(book));
+	reader_chrome_layout();
 	lv_obj_set_style_pad_all(page_box, opt_margin, 0);
 	lv_obj_set_style_pad_all(page_spare, opt_margin, 0);
 	lv_obj_set_x(page_box, 0);
@@ -3242,20 +3315,21 @@ void ebookreader_init(gui_config_t *cfg) {
 	lv_obj_set_scrollable(count_box, false);
 	lv_obj_set_clickable(count_box, false);
 	lv_obj_set_flex_flow(count_box, LV_FLEX_FLOW_COLUMN);
-	count_timer = lv_timer_create(count_timer_cb, 1, NULL);
+	count_timer = lv_timer_create(count_timer_cb, 32, NULL);
 	lv_timer_pause(count_timer);
 
 	ebookbar_create(&status_bar, ebookreader_screen, cfg->screen_width);
 	lv_obj_align(status_bar.root, LV_ALIGN_BOTTOM_MID, 0, -6);
 
-	build_menu(cfg);
+	build_reader_header();
 	build_audio_strip(cfg);
+	build_menu(cfg);
 	lv_obj_move_foreground(menu_veil);
 
 	// No switcher_attach_back_gesture() here, deliberately: the swipe-back and
 	// the page turn are the same gesture, and the page turn is the one a reader
 	// makes a thousand times an hour. Leaving is close_book_cb().
-	theme_register_refresh(menu_theme_refresh);
+
 
 	lv_obj_add_event_cb(ebookreader_screen, reader_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(ebookreader_screen, reader_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);

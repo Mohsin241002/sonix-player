@@ -15,4 +15,7 @@ extern lv_obj_t *kblayoutpage_screen;
 
 void kblayoutpage_init(gui_config_t *cfg);
 
+// The page's scrolling column, for a card placed above the layouts.
+lv_obj_t *kblayoutpage_container(void);
+
 #endif /* KBLAYOUTPAGE_H */

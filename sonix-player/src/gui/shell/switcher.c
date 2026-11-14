@@ -1,4 +1,6 @@
 #include "switcher.h"
+#include "src/gui/ebook/ebookpage.h"
+#include "src/gui/shell/morepage.h"
 
 #include <stdio.h>
 
@@ -53,7 +55,11 @@ static int8_t back_btn_top_bar_height;
 static bool player_bar_shown;
 
 // How far down the chevron sits on the player.
-static int player_top(void) { return player_bar_shown ? back_btn_top_bar_height : BACK_BTN_PLAYER_TOP; }
+// Under the bar, the player's 64 px head row starts at the bar's bottom edge,
+// and the 56 px chevron is centred in it.
+static int player_top(void) {
+	return player_bar_shown ? back_btn_top_bar_height + 4 - back_btn_padding : BACK_BTN_PLAYER_TOP;
+}
 
 static void place_back_btn(bool below_top_bar) {
 	// Same offsets as the corner buttons on the right (playlists, settings,
@@ -62,7 +68,8 @@ static void place_back_btn(bool below_top_bar) {
 	// under, so the chevron takes the offset above -- unless the bar has been
 	// asked to stay up there too, and then it goes under it as anywhere else.
 	int y = back_btn_padding + (below_top_bar ? back_btn_top_bar_height : player_top());
-	lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, back_btn_padding, y);
+	int x = (!below_top_bar && player_bar_shown) ? 8 : back_btn_padding;
+	lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, x, y);
 }
 
 // Where the back button goes. A page can be reached by more than one route --
@@ -132,6 +139,16 @@ static lv_obj_t *player_return_screen;
 
 void switcher_set_player_return(lv_obj_t *screen) { player_return_screen = screen; }
 
+void switch_screen_sibling(lv_obj_t *target_screen) {
+	if (target_screen == lv_screen_active()) {
+		return;
+	}
+	if (player_return_screen == lv_screen_active()) {
+		player_return_screen = target_screen;
+	}
+	load_screen(target_screen);
+}
+
 static bool back_goes_to_player(void) {
 	return player_return_screen && lv_screen_active() == player_return_screen;
 }
@@ -175,6 +192,12 @@ static void back_btn_set_drag_offset(int32_t x) {
 // Public flavour of the same, for the player sheet: its chevron rides the
 // sheet while it is dragged or animated in and out.
 void back_btn_translate(int32_t x) { back_btn_set_drag_offset(x); }
+
+void back_btn_player_points_left(bool left) {
+	if (back_btn_icon && chevron_in_player) {
+		lv_image_set_src(back_btn_icon, left ? &icon_chevron_left : &icon_chevron_down);
+	}
+}
 
 int back_btn_centre_y(void) {
 	if (!back_btn) {
@@ -486,6 +509,10 @@ static lv_obj_t *chevron_hidden_on;
 // back to, the scan pages exit through their own buttons, and a page showing
 // a dialog with a close button already has its way out.
 static bool page_has_no_chevron(lv_obj_t *screen) {
+	// The four tab roots have no page to go back to: the tab bar is the way out.
+	if (screen == music_screen || screen == morepage_screen || screen == ebookpage_screen) {
+		return true;
+	}
 	return screen == main_menu_screen || screen == libraryscan_screen || screen == audiobookscan_screen ||
 		   (screen && screen == chevron_hidden_on);
 }
@@ -624,6 +651,10 @@ void back_btn_cb(lv_event_t *e) {
 	// The player sits on top of everything else, so it is what the chevron
 	// dismisses first.
 	if (player_sheet_is_open()) {
+		// With the words up, the chevron leads back to the sleeve first.
+		if (player_lyrics_back()) {
+			return;
+		}
 		player_sheet_close(true);
 		return;
 	}
@@ -769,6 +800,11 @@ void back_btn_player_mode(bool in_player) {
 		lv_obj_set_hidden(back_btn, true);
 	}
 	chevron_in_player = in_player;
+	// The player is put away downwards in the design's language: its chevron
+	// points down, every other page's points back.
+	if (back_btn_icon) {
+		lv_image_set_src(back_btn_icon, in_player ? &icon_chevron_down : &icon_chevron_left);
+	}
 	chevron_apply_color();
 	place_back_btn(!in_player);
 }

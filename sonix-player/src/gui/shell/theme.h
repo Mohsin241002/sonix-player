@@ -66,6 +66,11 @@ void theme_init(void);
 void theme_notify_screen_shown(lv_obj_t *screen);
 
 const theme_palette_t *theme(void);
+
+// What to write or draw on top of an accent fill: near-black ink on a light
+// accent (amber, yellow, orange), white on a dark one. White text on amber is
+// barely legible on the R1 panel.
+lv_color_t theme_on_accent(void);
 bool theme_is_dark(void);
 
 // Switches between the two presets and repaints the UI.

@@ -275,11 +275,13 @@ static lv_obj_t *make_heading(lv_obj_t *parent, const char *tag, int y) {
 	return label;
 }
 
+lv_obj_t *kblayoutpage_container(void) { return page; }
+
 void kblayoutpage_init(gui_config_t *cfg) {
 	kblayoutpage_screen = lv_obj_create(NULL);
 	lv_obj_add_style(kblayoutpage_screen, &theme_style_screen, 0);
 
-	lv_obj_t *container = settingsrow_page(kblayoutpage_screen, cfg, "keyboard_layout");
+	lv_obj_t *container = settingsrow_page(kblayoutpage_screen, cfg, "settings_keyboard");
 	page = container;
 
 	int width = cfg->screen_width - 2 * cfg->padding;

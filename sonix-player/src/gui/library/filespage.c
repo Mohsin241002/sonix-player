@@ -1,4 +1,7 @@
 #include "filespage.h"
+#include "src/system/device/sysinfo.h"
+#include "src/system/core/config.h"
+#include "src/gui/shell/navbar.h"
 
 #include <dirent.h>
 #include <pthread.h>
@@ -88,6 +91,10 @@ static bool rebuilding;
 static lv_obj_t *file_list;
 static lv_obj_t *empty_label;
 static lv_obj_t *title_label;
+static lv_obj_t *storage_value;
+static lv_obj_t *storage_bar;
+static lv_obj_t *hidden_switch;
+static bool show_hidden;
 
 
 // The name dialog, in the shape the playlist page uses: a full-screen layer
@@ -294,11 +301,7 @@ static void read_folder(void) {
 		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
 			continue;
 		}
-		// Unlike the music browser, a dot file is shown: a file manager that
-		// hides files is not one, and .local is exactly the kind of folder
-		// somebody opens this page to look inside. What stays out is the junk a
-		// desktop leaves behind, which is not the user's and never was.
-		if (playlist_is_junk_name(de->d_name)) {
+		if ((!show_hidden && de->d_name[0] == '.') || playlist_is_junk_name(de->d_name)) {
 			continue;
 		}
 
@@ -748,7 +751,7 @@ static void pick_rebuild(void) {
 		lv_obj_set_size(row, lv_pct(100), ROW_HEIGHT);
 		lv_obj_add_style(row, &theme_style_card, 0);
 		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 12, 0);
+		settingsrow_group(pick_list, row);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
 		lv_obj_set_style_pad_hor(row, 16, 0);
@@ -998,7 +1001,8 @@ static void build_row(int index) {
 	lv_obj_set_size(row, lv_pct(100), ROW_HEIGHT);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	// One surface for the whole listing, a hairline between its rows.
+	settingsrow_group(file_list, row);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, 16, 0);
@@ -1166,9 +1170,34 @@ static bool back_guard_peek(void) {
 		   (pick_layer && !lv_obj_is_hidden(pick_layer)) || strcmp(path, root_path) != 0;
 }
 
+static void refresh_storage(void) {
+	sysinfo_storage_t usage;
+	bool available = sysinfo_sd_usage(&usage) && usage.present;
+	lv_obj_set_hidden(storage_bar, !available);
+	if (!available) {
+		lv_label_set_text(storage_value, tr("system_no_card"));
+		return;
+	}
+	char used[32], total[32];
+	sysinfo_format_size(usage.used, used, sizeof(used));
+	sysinfo_format_size(usage.total, total, sizeof(total));
+	lv_label_set_text_fmt(storage_value, "%s / %s", used, total);
+	lv_bar_set_value(storage_bar, usage.used_percent, LV_ANIM_OFF);
+}
+
 static void loaded_cb(lv_event_t *e) {
 	(void)e;
+	refresh_storage();
 	rebuild();
+}
+
+static void hidden_changed_cb(lv_event_t *e) {
+	(void)e;
+	show_hidden = lv_obj_has_state(hidden_switch, LV_STATE_CHECKED);
+	config_set_bool("files", "show_hidden", show_hidden);
+	config_save();
+	rebuild();
+	lv_obj_scroll_to_y(file_list, 0, LV_ANIM_OFF);
 }
 
 void filespage_open(void) {
@@ -1203,9 +1232,33 @@ void filespage_init(gui_config_t *cfg) {
 
 	int content_top = settingsrow_content_top(cfg);
 
+	int footer = navbar_attach_mini(filespage_screen, cfg);
+	const int header_height = 142;
+	lv_obj_t *summary = lv_obj_create(filespage_screen);
+	lv_obj_remove_style_all(summary);
+	lv_obj_set_size(summary, cfg->screen_width - 24, header_height);
+	lv_obj_align(summary, LV_ALIGN_TOP_MID, 0, content_top);
+	lv_obj_set_scrollable(summary, false);
+	lv_obj_set_flex_flow(summary, LV_FLEX_FLOW_COLUMN);
+	lv_obj_t *storage = settingsrow_add(summary, "system_sd_card", &storage_value, NULL, NULL);
+	lv_obj_set_height(storage, 78);
+	lv_obj_set_style_pad_bottom(storage, 18, 0);
+	storage_bar = lv_bar_create(storage);
+	lv_obj_remove_style_all(storage_bar);
+	lv_obj_set_size(storage_bar, lv_pct(100), 6);
+	lv_obj_align(storage_bar, LV_ALIGN_BOTTOM_MID, 0, 9);
+	lv_obj_add_style(storage_bar, &theme_style_slider_track, LV_PART_MAIN);
+	lv_obj_add_style(storage_bar, &theme_style_accent_bg, LV_PART_INDICATOR);
+	lv_obj_set_style_radius(storage_bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+	lv_bar_set_range(storage_bar, 0, 100);
+	lv_obj_t *filter = settingsrow_toggle(summary, "files_show_hidden", &hidden_switch, hidden_changed_cb);
+	lv_obj_set_height(filter, 56);
+	show_hidden = config_get_bool("files", "show_hidden", false);
+	lv_obj_set_state(hidden_switch, LV_STATE_CHECKED, show_hidden);
+
 	file_list = lv_obj_create(filespage_screen);
-	lv_obj_set_size(file_list, lv_pct(100), cfg->screen_height - content_top);
-	lv_obj_align(file_list, LV_ALIGN_TOP_LEFT, 0, content_top);
+	lv_obj_set_size(file_list, lv_pct(100), cfg->screen_height - content_top - header_height - footer);
+	lv_obj_align(file_list, LV_ALIGN_TOP_LEFT, 0, content_top + header_height);
 	lv_obj_set_style_bg_opa(file_list, 0, 0);
 	lv_obj_set_style_border_width(file_list, 0, 0);
 	lv_obj_set_style_radius(file_list, 0, 0);

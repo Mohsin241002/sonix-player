@@ -44,6 +44,7 @@ static void layout(tabbar_t *t) {
 lv_obj_t *tabbar_create(tabbar_t *t, lv_obj_t *parent) {
 	t->count = 0;
 	t->active = -1;
+	t->neutral_selection = false;
 	t->bar = lv_obj_create(parent);
 	lv_obj_remove_style_all(t->bar);
 	lv_obj_set_size(t->bar, lv_pct(100), LV_SIZE_CONTENT);
@@ -80,7 +81,7 @@ lv_obj_t *tabbar_add(tabbar_t *t, const char *text, lv_event_cb_t cb, void *user
 
 	lv_obj_t *label = lv_label_create(tab);
 	lv_label_set_text(label, tr(text));
-	lv_obj_set_style_text_font(label, &font_ui_20, 0);
+	lv_obj_set_style_text_font(label, &font_ui_18_bold, 0);
 	lv_obj_center(label);
 
 	t->tabs[t->count] = tab;
@@ -91,16 +92,22 @@ lv_obj_t *tabbar_add(tabbar_t *t, const char *text, lv_event_cb_t cb, void *user
 	return tab;
 }
 
+void tabbar_use_neutral_selection(tabbar_t *t) {
+	t->neutral_selection = true;
+	tabbar_set_active(t, t->active);
+}
+
 void tabbar_set_active(tabbar_t *t, int index) {
 	t->active = index;
+	lv_color_t selected = theme()->surface_pressed; // the design's segments: raised, never filled with the accent
 	for (int i = 0; i < t->count; i++) {
 		bool on = i == index;
 		lv_obj_set_style_bg_opa(t->tabs[i], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-		lv_obj_set_style_bg_color(t->tabs[i], theme()->accent, 0);
+		lv_obj_set_style_bg_color(t->tabs[i], selected, 0);
 		// Pressed, an idle tab darkens as a row would.
 		lv_obj_set_style_bg_opa(t->tabs[i], LV_OPA_COVER, LV_STATE_PRESSED);
-		lv_obj_set_style_bg_color(t->tabs[i], on ? theme()->accent : theme()->surface_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_text_color(t->labels[i], on ? lv_color_white() : theme()->text_primary, 0);
+		lv_obj_set_style_bg_color(t->tabs[i], on ? selected : theme()->surface_pressed, LV_STATE_PRESSED);
+		lv_obj_set_style_text_color(t->labels[i], on ? theme()->text_primary : theme()->text_secondary, 0);
 		bool off = lv_obj_has_state(t->tabs[i], LV_STATE_DISABLED);
 		lv_obj_set_style_opa(t->tabs[i], off ? LV_OPA_40 : LV_OPA_COVER, 0);
 	}

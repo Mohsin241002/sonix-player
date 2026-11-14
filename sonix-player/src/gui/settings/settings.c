@@ -10,13 +10,18 @@
 #include "src/gui/shell/confirm.h"
 #include "src/gui/settings/devoptions.h"
 #include "src/gui/settings/language.h"
+#include "src/gui/library/libraryscan.h"
+#include "src/gui/settings/musicsettings.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/settings/kblayoutpage.h"
+#include "src/gui/settings/lastfmsettings.h"
+#include "src/system/lastfm/lastfm.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/remap.h"
 #include "src/gui/settings/screensaver.h"
+#include "src/gui/shell/quickpanel.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/settings/systempage.h"
@@ -28,6 +33,9 @@
 #include "src/system/device/power.h"
 #include "src/system/device/screenshot.h"
 #include "src/system/device/system.h"
+#include "src/system/device/clock.h"
+#include "src/system/audio/eq.h"
+#include "src/system/input/kblayout.h"
 
 lv_obj_t *settings_screen;
 
@@ -233,7 +241,7 @@ static void refresh_brightness_slider(void) {
 
 static void build_screen_page(gui_config_t *cfg) {
 	screensettings_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(screensettings_screen, cfg, "settings_screen");
+	lv_obj_t *container = settingsrow_playback_page(screensettings_screen, cfg, "settings_screen");
 
 	// The brightness card: name up top, the current percent on the right, a
 	// full-width slider underneath.
@@ -361,17 +369,17 @@ void settings_refresh_devoptions(void) {
 // effect immediately via keyboard_refresh_type().
 static lv_obj_t *kbtype_buttons[2]; // 0 = QWERTY, 1 = T9
 
+static void settings_values(void);
+
 static void refresh_kbtype_buttons(void) {
 	int active = config_get_int("other", "keyboard_t9", 0) != 0 ? 1 : 0;
 	for (int i = 0; i < 2; i++) {
 		if (!kbtype_buttons[i]) {
 			continue;
 		}
-		bool on = i == active;
-		lv_obj_set_style_bg_color(kbtype_buttons[i], on ? theme()->accent : theme()->surface_pressed, 0);
-		lv_obj_set_style_text_color(lv_obj_get_child(kbtype_buttons[i], 0),
-									on ? lv_color_white() : theme()->text_primary, 0);
+		settingsrow_pill_active(kbtype_buttons[i], i == active);
 	}
+	settings_values();
 }
 
 static void kbtype_pick_cb(lv_event_t *e) {
@@ -383,18 +391,8 @@ static void kbtype_pick_cb(lv_event_t *e) {
 }
 
 static lv_obj_t *make_kbtype_pill(lv_obj_t *parent, const char *text, int t9) {
-	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
-	lv_obj_set_style_pad_hor(btn, 22, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // the Adwaita pill
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_add_event_cb(btn, kbtype_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)t9);
-
-	lv_obj_t *label = lv_label_create(btn);
-	lv_label_set_text(label, text);
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_center(label);
+	lv_obj_t *btn = settingsrow_pill_text(parent, text, t9, kbtype_pick_cb);
+	lv_obj_set_flex_grow(btn, 0);
 	return btn;
 }
 
@@ -404,7 +402,6 @@ static lv_obj_t *screenshot_switch;
 // Volume steps: how far one press of a volume key moves the volume, from
 // VOLUME_STEP_MIN to VOLUME_STEP_MAX percent. Position 0 of the slider is the
 // smallest step.
-static lv_obj_t *volume_step_slider;
 static lv_obj_t *volume_step_value;
 
 static int volume_step_setting(void) {
@@ -416,8 +413,13 @@ static int volume_step_setting(void) {
 }
 
 static void volume_step_changed_cb(lv_event_t *e) {
-	(void)e;
-	int step = VOLUME_STEP_MIN + (int)lv_slider_get_value(volume_step_slider);
+	int step = volume_step_setting() + (int)(intptr_t)lv_event_get_user_data(e);
+	if (step < VOLUME_STEP_MIN) {
+		step = VOLUME_STEP_MIN;
+	}
+	if (step > VOLUME_STEP_MAX) {
+		step = VOLUME_STEP_MAX;
+	}
 	if (step == volume_step_setting()) {
 		return;
 	}
@@ -434,57 +436,49 @@ static void screenshot_toggled_cb(lv_event_t *e) {
 
 static void build_other_page(gui_config_t *cfg) {
 	othersettings_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(othersettings_screen, cfg, "more");
+	lv_obj_t *container = settingsrow_page(othersettings_screen, cfg, "settings_buttons_title");
+
+	settingsrow_add(container, "remap_buttons", NULL, switch_screen_cb, remap_screen);
+	settingsrow_gap(container);
 
 	settingsrow_toggle(container, "settings_in_line_remote", &headset_switch, headset_toggled_cb);
 	if (headset_controls_enabled()) {
 		lv_obj_add_state(headset_switch, LV_STATE_CHECKED);
 	}
 
-	settingsrow_add(container, "remap_buttons", NULL, switch_screen_cb, remap_screen);
-
-	settingsrow_slider(container, "settings_volume_steps", VOLUME_STEP_MAX - VOLUME_STEP_MIN + 1, &volume_step_value,
-					   &volume_step_slider, volume_step_changed_cb);
+	settingsrow_stepper(container, "settings_volume_step_short", "settings_volume_step_sub", &volume_step_value,
+						volume_step_changed_cb);
 	int step = volume_step_setting();
-	lv_slider_set_value(volume_step_slider, step - VOLUME_STEP_MIN, LV_ANIM_OFF);
 	lv_label_set_text_fmt(volume_step_value, "%d", step);
 	input_set_volume_step(step);
-	settingsrow_add(container, "control_centre", NULL, switch_screen_cb, ccsettings_screen);
-
-	// Which alphabets the keyboard can be laid out in, above the shape of the
-	// keys: the letters matter more than whether they come ten to a row or
-	// three to a key.
-	settingsrow_add(container, "keyboard_layout", NULL, switch_screen_cb, kblayoutpage_screen);
-
-	// Keyboard type: the two pills on a card, like the MSEB radius control.
-	lv_obj_t *kb_card = lv_obj_create(container);
+	// Keyboard type: a row at the top of the Keyboard page, the name on the
+	// left and the two pills on the right, as the design has it.
+	lv_obj_t *kb_parent = kblayoutpage_container() ? kblayoutpage_container() : container;
+	lv_obj_t *kb_card = lv_obj_create(kb_parent);
 	lv_obj_set_width(kb_card, lv_pct(100));
-	lv_obj_set_height(kb_card, LV_SIZE_CONTENT);
+	lv_obj_set_height(kb_card, 76);
 	lv_obj_add_style(kb_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(kb_card, 12, 0);
+	lv_obj_set_style_radius(kb_card, 20, 0);
 	lv_obj_set_style_border_width(kb_card, 0, 0);
 	lv_obj_set_style_shadow_width(kb_card, 0, 0);
-	lv_obj_set_style_pad_all(kb_card, 16, 0);
-	lv_obj_set_style_pad_row(kb_card, 12, 0);
+	lv_obj_set_style_pad_left(kb_card, 20, 0);
+	lv_obj_set_style_pad_right(kb_card, 8, 0);
+	lv_obj_set_style_pad_ver(kb_card, 0, 0);
 	lv_obj_set_scrollable(kb_card, false);
-	lv_obj_set_flex_flow(kb_card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(kb_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+	lv_obj_set_flex_flow(kb_card, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(kb_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	if (kb_parent != container) {
+		lv_obj_move_to_index(kb_card, 0);
+	}
 
 	lv_obj_t *kb_title = lv_label_create(kb_card);
-	lv_label_set_text(kb_title, tr("settings_keyboard_type"));
+	lv_label_set_text(kb_title, tr("settings_keyboard_type_short"));
 	lv_obj_add_style(kb_title, &theme_style_text, 0);
 	lv_obj_set_style_text_font(kb_title, &font_ui_24, 0);
 
-	lv_obj_t *kb_pills = lv_obj_create(kb_card);
-	lv_obj_set_width(kb_pills, lv_pct(100));
-	lv_obj_set_height(kb_pills, LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(kb_pills, 0, 0);
-	lv_obj_set_style_border_width(kb_pills, 0, 0);
-	lv_obj_set_style_pad_all(kb_pills, 0, 0);
-	lv_obj_set_style_pad_column(kb_pills, 8, 0);
-	lv_obj_set_scrollable(kb_pills, false);
+	lv_obj_t *kb_pills = settingsrow_segmented(kb_card);
+	lv_obj_set_width(kb_pills, LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(kb_pills, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(kb_pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 	kbtype_buttons[0] = make_kbtype_pill(kb_pills, "QWERTY", 0);
 	kbtype_buttons[1] = make_kbtype_pill(kb_pills, "T9", 1);
@@ -523,20 +517,144 @@ static void build_other_page(gui_config_t *cfg) {
 	switcher_attach_back_gesture(othersettings_screen);
 }
 
+// Pages built after this one: the row holds where the page will be, and looks
+// when it is tapped.
+static void open_lazy_cb(lv_event_t *e) {
+	lv_obj_t **screen = lv_event_get_user_data(e);
+	if (screen && *screen) {
+		switch_screen(*screen);
+	}
+}
+
+// What the rows of the main page say beside their names.
+static lv_obj_t *appearance_value;
+static lv_obj_t *screen_value;
+static lv_obj_t *cc_value;
+static lv_obj_t *clock_value;
+static lv_obj_t *power_value;
+static lv_obj_t *language_value;
+static lv_obj_t *sound_value;
+static lv_obj_t *playback_value;
+static lv_obj_t *keyboard_value;
+static lv_obj_t *about_value;
+static lv_obj_t *lastfm_value;
+
+static void settings_values(void) {
+	if (appearance_value) {
+		lv_label_set_text(appearance_value, tr(theme()->dark ? "appearance_dark" : "appearance_light"));
+	}
+	if (screen_value) {
+		// The same figure the Screen page's slider shows.
+		long max = brightness_slider ? lv_slider_get_max_value(brightness_slider) : 0;
+		if (max > 0) {
+			int seconds = SCREEN_OFF[screen_off_index()].seconds;
+			if (seconds > 0) {
+				lv_label_set_text_fmt(screen_value, "%d%% · %d s", (int)((power_get_brightness() * 100 + max / 2) / max), seconds);
+			} else {
+				lv_label_set_text_fmt(screen_value, "%d%%", (int)((power_get_brightness() * 100 + max / 2) / max));
+			}
+		} else {
+			lv_label_set_text(screen_value, "");
+		}
+	}
+	if (cc_value) {
+		char text[32];
+		snprintf(text, sizeof(text), tr("player_position_of"), QP_BTN_COUNT - quickpanel_hidden_count(), QP_BTN_COUNT);
+		lv_label_set_text(cc_value, text);
+	}
+	if (clock_value) {
+		lv_label_set_text(clock_value, tr(clock_auto_enabled() ? "timeset_automatic" : "timeset_manual"));
+	}
+	if (power_value) {
+		if (config_get_bool("power", "standby_mem", true)) {
+			int minutes = (int)config_get_int("power", "standby_mem_seconds", 60) / 60;
+			lv_label_set_text_fmt(power_value, tr("settings_val_standby"), minutes < 1 ? 1 : minutes);
+		} else {
+			lv_label_set_text(power_value, "");
+		}
+	}
+	if (language_value) {
+		char name[64];
+		lang_display_name(lang_current(), name, sizeof(name));
+		lv_label_set_text(language_value, name);
+	}
+	if (sound_value) {
+		lv_label_set_text_fmt(sound_value, "%s · %s", tr(eq_get_enabled() ? "settings_val_eq_on" : "settings_val_eq_off"),
+							  tr(musicsettings_high_gain() ? "settings_val_high_gain" : "settings_val_low_gain"));
+	}
+	if (playback_value) {
+		lv_label_set_text(playback_value, tr(musicsettings_gapless_enabled() ? "settings_val_gapless_on" : "settings_val_gapless_off"));
+	}
+	if (keyboard_value) {
+		lv_label_set_text(keyboard_value, config_get_int("other", "keyboard_t9", 0) != 0 ? "T9" : "QWERTY");
+	}
+	if (lastfm_value) {
+		lv_label_set_text(lastfm_value, lastfm_active() ? "" : tr("lastfm_not_signed_in"));
+	}
+	if (about_value) {
+		lv_label_set_text(about_value, "HiBy R1");
+	}
+}
+
+static void settings_loaded_cb(lv_event_t *e) {
+	(void)e;
+	settings_values();
+}
+
+static void open_sound_cb(lv_event_t *e) {
+	(void)e;
+	lv_obj_t *screen = musicsettings_eq_screen();
+	if (screen) {
+		switch_screen(screen);
+	}
+}
+
+static void open_lastfm_cb(lv_event_t *e) {
+	(void)e;
+	lv_obj_t *screen = lastfmsettings_screen();
+	if (screen) {
+		switch_screen(screen);
+	}
+}
+
+static void open_playback_cb(lv_event_t *e) {
+	(void)e;
+	lv_obj_t *screen = musicsettings_playback_screen();
+	if (screen) {
+		switch_screen(screen);
+	}
+}
+
 void settings_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(settings_screen, cfg, "settings");
+	lv_obj_t *container = settingsrow_playback_page(settings_screen, cfg, "settings");
 
 	build_screen_page(cfg);
 	build_other_page(cfg);
 
-	settingsrow_add(container, "appearance", NULL, switch_screen_cb, appearance_screen);
-	settingsrow_add(container, "settings_screen", NULL, switch_screen_cb, screensettings_screen);
-	settingsrow_add(container, "date_and_time", NULL, clock_clicked_cb, NULL);
-	settingsrow_add(container, "power", NULL, switch_screen_cb, powersettings_screen);
-	language_bind_menu_row(settingsrow_add(container, "language", NULL, switch_screen_cb, language_screen));
+	settingsrow_section(container, "system_device");
+	settingsrow_add(container, "appearance", &appearance_value, switch_screen_cb, appearance_screen);
+	settings_values();
+	theme_register_refresh(settings_values);
+	settingsrow_add(container, "settings_screen", &screen_value, switch_screen_cb, screensettings_screen);
+	settingsrow_add(container, "date_and_time", &clock_value, clock_clicked_cb, NULL);
+	settingsrow_add(container, "power", &power_value, switch_screen_cb, powersettings_screen);
+	language_bind_menu_row(settingsrow_add(container, "language", &language_value, switch_screen_cb, language_screen));
 
-	settingsrow_add(container, "more", NULL, switch_screen_cb, othersettings_screen);
-	settingsrow_add(container, "system", NULL, switch_screen_cb, systempage_screen);
+	settingsrow_section(container, "music");
+	settingsrow_add(container, "nav_sound", &sound_value, open_sound_cb, NULL);
+	settingsrow_add(container, "settings_playback", &playback_value, open_playback_cb, NULL);
+	settingsrow_add(container, "lastfm", &lastfm_value, open_lastfm_cb, NULL);
+
+	settingsrow_section(container, "settings_controls");
+	settingsrow_add(container, "settings_buttons", NULL, switch_screen_cb, othersettings_screen);
+	settingsrow_add(container, "control_centre", &cc_value, open_lazy_cb, &ccsettings_screen);
+	settings_values();
+	lv_obj_add_event_cb(settings_screen, settings_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	settingsrow_add(container, "settings_keyboard", &keyboard_value, open_lazy_cb, &kblayoutpage_screen);
+
+	settingsrow_section(container, "system");
+	settingsrow_add(container, "system_about", &about_value, switch_screen_cb, sysinfo_screen);
+	settings_values();
 	// Hidden until the build number in System > Info is tapped five times.
 	// Built regardless, so unlocking is a visibility change rather than a
 	// rebuild of the page.

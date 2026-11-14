@@ -228,7 +228,7 @@ static void loaded_cb(lv_event_t *e) {
 }
 
 void dacpage_init(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(dacpage_screen, cfg, "dac");
+	lv_obj_t *container = settingsrow_page(dacpage_screen, cfg, "usb_dac");
 
 	// The mode is a switch, not a side effect of arriving: the page can be
 	// looked at, and the charging button read, without the cable being taken
@@ -242,9 +242,34 @@ void dacpage_init(gui_config_t *cfg) {
 	// settingsrow_page() builds already centres its children on the cross axis,
 	// and an object positioned by alignment leaves the flow and is measured as
 	// taking no space, so it would overlap the row above and steal its presses.
-	big_icon = lv_image_create(container);
-	lv_image_set_src(big_icon, &icon_dac_page);
+	// The design's mark: a flat disc in the accent on a halo of the same hue,
+	// with the glyph in the accent's ink. Drawn from the theme rather than a
+	// picture, so it follows the accent in use.
+	big_icon = lv_obj_create(container);
+	lv_obj_remove_style_all(big_icon);
+	lv_obj_set_size(big_icon, 168, 168);
+	lv_obj_set_style_radius(big_icon, LV_RADIUS_CIRCLE, 0);
+	lv_obj_add_style(big_icon, &theme_style_accent_bg, 0);
+	lv_obj_set_style_bg_opa(big_icon, LV_OPA_20, 0);
 	lv_obj_set_style_margin_top(big_icon, 40, 0);
+	lv_obj_set_clickable(big_icon, false);
+	lv_obj_set_scrollable(big_icon, false);
+	lv_obj_t *disc = lv_obj_create(big_icon);
+	lv_obj_remove_style_all(disc);
+	lv_obj_set_size(disc, 120, 120);
+	lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+	lv_obj_add_style(disc, &theme_style_accent_bg, 0);
+	lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
+	lv_obj_center(disc);
+	lv_obj_set_clickable(disc, false);
+	lv_obj_t *glyph = lv_image_create(disc);
+	lv_image_set_src(glyph, &icon_menu_dac);
+	lv_obj_set_size(glyph, 56, 56);
+	lv_image_set_inner_align(glyph, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_add_style(glyph, &theme_style_accent_bg, 0);
+	lv_obj_set_style_bg_opa(glyph, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_image_recolor_opa(glyph, LV_OPA_COVER, 0);
+	lv_obj_center(glyph);
 
 	format_label = lv_label_create(container);
 	lv_obj_set_width(format_label, lv_pct(100));

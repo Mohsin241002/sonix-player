@@ -189,12 +189,29 @@ static void build_tapped_cb(lv_event_t *e) {
 // building the two pages
 // ---------------------------------------------------------------------------
 
-// A card with the name on the left and the value on the right, like any other
-// row, but not clickable: the versions and the card usage are information, not
-// commands. `value_out` receives the right-hand label.
 static lv_obj_t *info_row(lv_obj_t *parent, const char *name, lv_obj_t **value_out) {
-	lv_obj_t *row = settingsrow_add(parent, name, value_out, NULL, NULL);
+	lv_obj_t *row = lv_obj_create(parent);
+	lv_obj_remove_style_all(row);
+	lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_style_min_height(row, 76, 0);
+	lv_obj_add_style(row, &theme_style_card, 0);
+	lv_obj_set_style_pad_hor(row, 18, 0);
+	lv_obj_set_style_pad_ver(row, 10, 0);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_set_clickable(row, false);
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+	settingsrow_group(parent, row);
+
+	lv_obj_t *caption = lv_label_create(row);
+	lv_label_set_text(caption, tr(name));
+	lv_obj_add_style(caption, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(caption, &font_ui_18, 0);
+	lv_obj_set_width(caption, lv_pct(100));
+
+	*value_out = lv_label_create(row);
+	lv_obj_add_style(*value_out, &theme_style_text, 0);
+	lv_obj_set_style_text_font(*value_out, &font_ui_22_bold, 0);
+	lv_obj_set_width(*value_out, lv_pct(100));
 	return row;
 }
 
@@ -211,7 +228,7 @@ static void sysinfo_loaded_cb(lv_event_t *e) {
 static void refresh_theme(void) { sd_refresh(); }
 
 static void build_sysinfo_page(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(sysinfo_screen, cfg, "system_about");
+	lv_obj_t *container = settingsrow_playback_page(sysinfo_screen, cfg, "system_about");
 
 	// --- device and DAC: two read-only rows ---
 	// Both come from system-info.json, which is the one place that knows which
@@ -275,16 +292,56 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 	// The system version carries the thank-you (see easteregg.c), so it stays
 	// clickable where the rows above it are not.
 	lv_obj_t *os_value = NULL;
-	lv_obj_t *os_row = settingsrow_add(container, "system_operating_system_version", &os_value, NULL, NULL);
+	lv_obj_t *os_row = info_row(container, "system_operating_system_version", &os_value);
+	lv_obj_set_clickable(os_row, true);
 	const char *os = sysinfo_os_version();
 	lv_label_set_text(os_value, os[0] ? os : "\xE2\x80\x94"); // em dash
 	easteregg_attach(os_row);
 
 	// Five taps reveal the developer options.
 	lv_obj_t *build_value = NULL;
-	settingsrow_add(container, "system_build_number", &build_value, build_tapped_cb, NULL);
+	lv_obj_t *build_row = info_row(container, "system_build_number", &build_value);
+	lv_obj_set_clickable(build_row, true);
+	lv_obj_add_event_cb(build_row, build_tapped_cb, LV_EVENT_CLICKED, NULL);
 	const char *build = sysinfo_build_version();
 	lv_label_set_text(build_value, build[0] ? build : "\xE2\x80\x94");
+
+	lv_obj_move_to_index(sd_card, -1);
+	lv_obj_set_style_margin_top(sd_card, 8, 0);
+	settingsrow_gap(container);
+	// The two actions side by side as quiet pill buttons, the reset in red, as
+	// the design has them. Both still pass through their confirmations.
+	lv_obj_t *actions = lv_obj_create(container);
+	lv_obj_remove_style_all(actions);
+	lv_obj_set_size(actions, lv_pct(100), 72);
+	lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
+	lv_obj_set_style_pad_column(actions, 8, 0);
+	lv_obj_set_event_bubble(actions, true);
+	for (int i = 0; i < 2; i++) {
+		lv_obj_t *btn = lv_btn_create(actions);
+		lv_obj_set_height(btn, 72);
+		lv_obj_set_flex_grow(btn, 1);
+		lv_obj_set_style_radius(btn, 36, 0);
+		lv_obj_set_style_shadow_width(btn, 0, 0);
+		lv_obj_set_style_border_width(btn, 0, 0);
+		lv_obj_set_style_pad_hor(btn, 12, 0);
+		lv_obj_add_style(btn, &theme_style_card_pressed, 0);
+		lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+		lv_obj_set_event_bubble(btn, true);
+		lv_obj_add_event_cb(btn, i == 0 ? firmware_clicked_cb : factory_clicked_cb, LV_EVENT_CLICKED, NULL);
+		lv_obj_t *label = lv_label_create(btn);
+		lv_label_set_text(label, tr(i == 0 ? "system_update_firmware" : "system_factory_reset"));
+		lv_obj_set_style_text_font(label, &font_ui_20, 0);
+		if (i == 0) {
+			lv_obj_add_style(label, &theme_style_text, 0);
+		} else {
+			lv_obj_set_style_text_color(label, lv_color_hex(0xFF8272), 0);
+		}
+		lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+		lv_obj_set_width(label, lv_pct(100));
+		lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+		lv_obj_center(label);
+	}
 
 	lv_obj_add_event_cb(sysinfo_screen, sysinfo_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(sysinfo_screen);

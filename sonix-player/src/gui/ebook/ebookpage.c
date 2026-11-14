@@ -14,9 +14,11 @@
 #include "src/gui/ebook/ebookreader.h"
 #include "src/gui/ebook/ebooksettings.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/library/audiobooks.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/settingsrow.h"
+#include "src/gui/shell/navbar.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
@@ -41,8 +43,8 @@ lv_obj_t *ebookpage_screen;
 // ---------------------------------------------------------------------------
 
 #define SHELF_MAX 300
-#define TILE_COLUMNS 2
-#define TILE_GAP 14
+#define TILE_COLUMNS 3 // the design's shelf: three covers to a row
+#define TILE_GAP 12
 #define COVER_RATIO_NUM 3 // covers are drawn 2:3, the shape of a paperback
 #define COVER_RATIO_DEN 2
 
@@ -69,6 +71,31 @@ static int shelf_count;
 static int cover_w, cover_h;
 static char shelf_dir[512];
 static uint32_t covers_token;
+
+// ---------------------------------------------------------------------------
+// Continue: the book read last, above the shelf
+// ---------------------------------------------------------------------------
+
+#define CONTINUE_COVER_W 100
+#define CONTINUE_COVER_H 150
+
+static lv_obj_t *continue_card;
+static lv_obj_t *continue_image;
+static lv_obj_t *continue_title;
+static lv_obj_t *continue_where;
+static lv_obj_t *shelf_heading;
+static int continue_index = -1; // its place on the shelf, or -1
+static char continue_path[800];
+
+static void continue_read_cb(lv_event_t *e) {
+	(void)e;
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	if (continue_path[0]) {
+		ebookreader_open(continue_path);
+	}
+}
 
 static void entry_path(const shelf_entry_t *entry, char *out, size_t size) {
 	snprintf(out, size, "%s/%s", shelf_dir, entry->file);
@@ -99,6 +126,9 @@ static bool cover_ready(int index, const char *title, const cover_image_t *cover
 		if (entry->label) {
 			lv_label_set_text(entry->label, entry->name);
 		}
+		if (index == continue_index && continue_title) {
+			lv_label_set_text(continue_title, entry->name);
+		}
 	}
 	if (!cover || !entry->image) {
 		return false;
@@ -108,6 +138,12 @@ static bool cover_ready(int index, const char *title, const cover_image_t *cover
 	entry->has_cover = true;
 	lv_image_set_src(entry->image, &entry->cover.dsc);
 	lv_obj_set_hidden(entry->image, false);
+	if (index == continue_index && continue_image && cover_w > 0) {
+		// The same picture, scaled down to the card's cover.
+		lv_image_set_src(continue_image, &entry->cover.dsc);
+		lv_image_set_scale(continue_image, 256 * CONTINUE_COVER_W / cover_w);
+		lv_obj_set_hidden(continue_image, false);
+	}
 	return true;
 }
 
@@ -172,6 +208,12 @@ static void shelf_free(void) {
 	// Told, not waited for: it stops within one book of here, in its own time.
 	// Joining it would hold the page being left on screen and unresponsive.
 	ebookcovers_stop(covers_token);
+	// The card's picture is one of the shelf's: it lets go before they are freed.
+	if (continue_image) {
+		lv_image_set_src(continue_image, NULL);
+		lv_obj_set_hidden(continue_image, true);
+	}
+	continue_index = -1;
 	if (grid) {
 		lv_obj_clean(grid);
 	}
@@ -315,6 +357,14 @@ static void settings_cb(lv_event_t *e) {
 	switch_screen(ebooksettings_screen);
 }
 
+static void audiobooks_cb(lv_event_t *e) {
+	(void)e;
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	switch_screen(audiobooks_screen);
+}
+
 static void bookmarks_cb(lv_event_t *e) {
 	(void)e;
 	if (player_sheet_drag_active() || switcher_back_drag_active()) {
@@ -333,6 +383,29 @@ static void loaded_cb(lv_event_t *e) {
 	(void)e;
 	shelf_free();
 	scan_folder();
+
+	// The book read last, when it is still on the shelf.
+	int chapter = 0;
+	continue_path[0] = '\0';
+	if (ebookreader_last(continue_path, sizeof(continue_path), &chapter)) {
+		for (int i = 0; i < shelf_count; i++) {
+			char path[800];
+			entry_path(&shelf[i], path, sizeof(path));
+			if (strcmp(path, continue_path) == 0) {
+				continue_index = i;
+				break;
+			}
+		}
+	}
+	if (continue_card) {
+		bool shown = continue_index >= 0;
+		lv_obj_set_hidden(continue_card, !shown);
+		lv_obj_set_hidden(shelf_heading, !shown);
+		if (shown) {
+			lv_label_set_text(continue_title, shelf[continue_index].name);
+			lv_label_set_text_fmt(continue_where, tr("ebook_chapter_n"), chapter);
+		}
+	}
 
 	if (shelf_count) {
 		lv_obj_set_hidden(empty_note, true);
@@ -357,6 +430,9 @@ void ebookpage_init(gui_config_t *cfg) {
 	lv_obj_add_style(ebookpage_screen, &theme_style_screen, 0);
 
 	lv_obj_t *container = settingsrow_page(ebookpage_screen, cfg, "books");
+	// The Books tab: the tab bar and mini-player under the shelf.
+	int nav_height = navbar_attach(ebookpage_screen, cfg, NAVBAR_BOOKS, true);
+	lv_obj_set_height(container, lv_obj_get_style_height(container, LV_PART_MAIN) - nav_height);
 	page_container = container;
 	// Both ends of a flick: SCROLL keeps up with a slow drag, SCROLL_END catches
 	// where a fast one landed.
@@ -365,6 +441,7 @@ void ebookpage_init(gui_config_t *cfg) {
 	// One button in the corner, so the heading has to be told to keep clear of
 	// it -- the same arrangement the Music page has.
 	settingsrow_title_corner_slots(settingsrow_page_title(ebookpage_screen), cfg, 2);
+	settingsrow_title_root(settingsrow_page_title(ebookpage_screen), cfg);
 
 	lv_obj_t *settings_btn = corner_button(cfg, 0, &icon_music_settings);
 	lv_obj_add_event_cb(settings_btn, settings_cb, LV_EVENT_CLICKED, NULL);
@@ -384,6 +461,113 @@ void ebookpage_init(gui_config_t *cfg) {
 	lv_obj_add_style(marks_icon, &theme_style_icon, 0);
 	lv_obj_center(marks_icon);
 	lv_obj_set_style_pad_row(container, TILE_GAP, 0);
+
+	// Books and audiobooks are two halves of one shelf in the design: the
+	// switcher at the top goes to the other half.
+	lv_obj_t *seg = lv_obj_create(container);
+	lv_obj_remove_style_all(seg);
+	lv_obj_add_style(seg, &theme_style_card, 0);
+	lv_obj_set_size(seg, lv_pct(100), 64);
+	lv_obj_set_style_radius(seg, 16, 0);
+	lv_obj_set_style_pad_all(seg, 4, 0);
+	lv_obj_set_style_pad_column(seg, 4, 0);
+	lv_obj_set_flex_flow(seg, LV_FLEX_FLOW_ROW);
+	lv_obj_set_scrollable(seg, false);
+	lv_obj_set_event_bubble(seg, true);
+	for (int i = 0; i < 2; i++) {
+		lv_obj_t *half = lv_btn_create(seg);
+		lv_obj_remove_style_all(half);
+		lv_obj_set_height(half, 56);
+		lv_obj_set_flex_grow(half, 1);
+		lv_obj_set_style_radius(half, 12, 0);
+		lv_obj_set_event_bubble(half, true);
+		lv_obj_t *name = lv_label_create(half);
+		lv_label_set_text(name, tr(i == 0 ? "books" : "audiobooks"));
+		lv_obj_set_style_text_font(name, &font_ui_20_bold, 0);
+		lv_obj_center(name);
+		if (i == 0) {
+			lv_obj_add_style(half, &theme_style_card_pressed, 0);
+			lv_obj_set_style_bg_opa(half, LV_OPA_COVER, 0);
+			lv_obj_add_style(name, &theme_style_text, 0);
+		} else {
+			lv_obj_add_style(name, &theme_style_text_dim, 0);
+			lv_obj_set_style_opa(half, LV_OPA_60, LV_STATE_PRESSED);
+			lv_obj_add_event_cb(half, audiobooks_cb, LV_EVENT_CLICKED, NULL);
+		}
+	}
+
+	// Continue: the cover, what it is, where it was left, and the way back in.
+	continue_card = lv_obj_create(container);
+	lv_obj_remove_style_all(continue_card);
+	lv_obj_add_style(continue_card, &theme_style_card, 0);
+	lv_obj_set_size(continue_card, lv_pct(100), CONTINUE_COVER_H + 28);
+	lv_obj_set_style_radius(continue_card, 20, 0);
+	lv_obj_set_style_pad_all(continue_card, 14, 0);
+	lv_obj_set_style_pad_column(continue_card, 16, 0);
+	lv_obj_set_flex_flow(continue_card, LV_FLEX_FLOW_ROW);
+	lv_obj_set_scrollable(continue_card, false);
+	lv_obj_set_clickable(continue_card, true);
+	lv_obj_set_event_bubble(continue_card, true);
+	lv_obj_add_event_cb(continue_card, continue_read_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_set_hidden(continue_card, true);
+
+	lv_obj_t *plate = lv_obj_create(continue_card);
+	lv_obj_remove_style_all(plate);
+	lv_obj_add_style(plate, &theme_style_card_pressed, 0);
+	lv_obj_set_style_bg_opa(plate, LV_OPA_COVER, 0);
+	lv_obj_set_size(plate, CONTINUE_COVER_W, CONTINUE_COVER_H);
+	lv_obj_set_style_radius(plate, 8, 0);
+	lv_obj_set_style_clip_corner(plate, true, 0);
+	lv_obj_set_scrollable(plate, false);
+	lv_obj_set_clickable(plate, false);
+	continue_image = lv_image_create(plate);
+	lv_obj_set_size(continue_image, CONTINUE_COVER_W, CONTINUE_COVER_H);
+	lv_image_set_inner_align(continue_image, LV_IMAGE_ALIGN_CENTER);
+	lv_obj_center(continue_image);
+	lv_obj_set_hidden(continue_image, true);
+
+	lv_obj_t *words = lv_obj_create(continue_card);
+	lv_obj_remove_style_all(words);
+	lv_obj_set_flex_grow(words, 1);
+	lv_obj_set_height(words, lv_pct(100));
+	lv_obj_set_flex_flow(words, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_style_pad_row(words, 4, 0);
+	lv_obj_set_scrollable(words, false);
+	lv_obj_set_clickable(words, false);
+	lv_obj_t *kind = lv_label_create(words);
+	lv_label_set_text(kind, tr("ebook_continue"));
+	lv_obj_add_style(kind, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(kind, &font_ui_16_bold, 0);
+	lv_obj_set_style_text_letter_space(kind, 1, 0);
+	continue_title = lv_label_create(words);
+	lv_label_set_text(continue_title, "");
+	lv_obj_set_width(continue_title, lv_pct(100));
+	lv_label_set_long_mode(continue_title, LV_LABEL_LONG_DOT);
+	lv_obj_set_height(continue_title, 2 * lv_font_get_line_height(&font_ui_24_bold));
+	lv_obj_add_style(continue_title, &theme_style_text, 0);
+	lv_obj_set_style_text_font(continue_title, &font_ui_24_bold, 0);
+	continue_where = lv_label_create(words);
+	lv_label_set_text(continue_where, "");
+	lv_obj_add_style(continue_where, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(continue_where, &font_ui_20, 0);
+	lv_obj_t *read = lv_btn_create(continue_card);
+	lv_obj_remove_style_all(read);
+	lv_obj_set_ignore_layout(read, true);
+	lv_obj_add_style(read, &theme_style_accent_bg, 0);
+	lv_obj_set_style_bg_opa(read, LV_OPA_COVER, 0);
+	lv_obj_set_size(read, LV_SIZE_CONTENT, 52);
+	lv_obj_set_style_radius(read, 26, 0);
+	lv_obj_set_style_pad_hor(read, 24, 0);
+	lv_obj_set_style_opa(read, LV_OPA_70, LV_STATE_PRESSED);
+	lv_obj_align(read, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+	lv_obj_add_event_cb(read, continue_read_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *read_text = lv_label_create(read);
+	lv_label_set_text(read_text, tr("ebook_read"));
+	lv_obj_set_style_text_font(read_text, &font_ui_20_bold, 0);
+	lv_obj_center(read_text);
+
+	shelf_heading = settingsrow_section(container, "ebook_all_books");
+	lv_obj_set_hidden(shelf_heading, true);
 
 	grid = lv_obj_create(container);
 	lv_obj_remove_style_all(grid);

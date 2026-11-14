@@ -1,6 +1,8 @@
 #ifndef EBOOKREADER_H
 #define EBOOKREADER_H
 
+#include <stdbool.h>
+#include <stddef.h>
 #include "src/gui/shell/gui.h"
 
 #include "lvgl/lvgl.h"
@@ -13,6 +15,10 @@ void ebookreader_init(gui_config_t *cfg);
 // for as long as this screen is up and is closed -- arenas, ZIP and fonts --
 // the moment it is left.
 void ebookreader_open(const char *path);
+
+// The book opened last and the chapter it was left in (from 1), for the
+// shelf's "Continue" card. False while no book has been opened yet.
+bool ebookreader_last(char *path, size_t size, int *chapter);
 
 // The same, but landing at a place somebody named instead of where the reading
 // was left: what the bookmarks page opens a book with.

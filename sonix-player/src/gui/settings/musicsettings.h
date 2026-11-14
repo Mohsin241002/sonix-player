@@ -15,6 +15,7 @@ void musicsettings_init(gui_config_t *cfg);
 // on a long press. They are settings pages like any other -- switch_screen()
 // takes them.
 lv_obj_t *musicsettings_eq_screen(void);
+void musicsettings_sound_tabs(lv_obj_t *screen, lv_obj_t *content, gui_config_t *cfg, int active);
 lv_obj_t *musicsettings_mseb_screen(void);
 
 // Switches those two on or off from outside (the control centre's quick

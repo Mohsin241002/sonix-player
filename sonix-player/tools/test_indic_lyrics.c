@@ -87,6 +87,25 @@ int main(int argc, char **argv) {
     assert(lv_obj_get_height(test) > 40);
     lv_obj_delete(test);
     assert(indic_memory_bytes() == 0);
+    // Active lyrics enlarge while neighboring lines retain their normal size.
+    lv_obj_t *neighbor = lv_label_create(screen);
+    assert(indic_label_set_text(neighbor, "नमस्ते दुनिया", base, 28, 432));
+    test = lv_label_create(screen);
+    size_t steady = 0;
+    for (int i = 0; i < 100; i++) {
+        int sizes[] = {28, 38, 32};
+        assert(indic_label_set_text(test, "रंगी सारी गुलाबी चुनरिया रे", base, sizes[i % 3], 432));
+        const lv_font_t *shaped = lv_obj_get_style_text_font(test, LV_PART_MAIN);
+        lv_font_glyph_dsc_t glyph = {0};
+        assert(lv_font_get_glyph_dsc(shaped, &glyph, 0xF0000, 0));
+        assert(glyph.box_h > 0 && glyph.box_w > 0);
+        lv_refr_now(display);
+        if (i == 0) steady = indic_memory_bytes();
+        assert(indic_memory_bytes() == steady);
+    }
+    lv_obj_delete(test);
+    lv_obj_delete(neighbor);
+    assert(indic_memory_bytes() == 0);
     // A normal lyric remains normal, and malformed input must not escape bounds.
     test = lv_label_create(screen);
     assert(!indic_label_set_text(test, "ordinary English", base, 26, 400));
