@@ -445,7 +445,6 @@ static int make_player(lv_obj_t *screen, gui_config_t *cfg, int top, int art) {
 	return height;
 }
 
-static void open_albums(void) { medialist_open(tr("albums"), LIBRARY_LIST_ALBUMS, LIBRARY_FILTER_NONE, NULL); }
 
 // ---------------------------------------------------------------------------
 // Jump back in: the three records played most recently, newest first, topped
@@ -466,37 +465,34 @@ typedef struct {
 	lv_obj_t *title;
 	lv_obj_t *artist;
 	cover_image_t cover;
-	char value[256]; // the album, as medialist_open() takes it
-	char path[512];	 // a track of it, to take the cover from
+	char path[512];	 // the track the cover is taken from
 	bool waiting;
 } recent_t;
 
 static recent_t recents[RECENT_COUNT];
 static int recent_filled;
-static long long recent_revision = -1;
 static lv_obj_t *recent_head;
 
-static bool recent_has(const char *value) {
-	for (int i = 0; i < recent_filled; i++) {
-		if (library_album_same(recents[i].value, value)) return true;
-	}
-	return false;
-}
+// The three lists the row offers, in this order. Each tile shows the cover of
+// one of its tracks -- the first of All tracks, the most played, and the
+// latest favourite -- its name, and how many tracks it holds.
+static const struct {
+	const char *title;
+	library_list_t kind;
+} HOME_LISTS[RECENT_COUNT] = {
+	{"music_all_tracks", LIBRARY_LIST_TRACKS},
+	{"music_most_played", LIBRARY_LIST_MOST_PLAYED},
+	{"favourites", LIBRARY_LIST_FAVOURITES},
+};
 
-static void recent_add(const char *value, const char *path) {
-	if (recent_filled >= RECENT_COUNT || !value[0] || recent_has(value)) return;
-	recent_t *r = &recents[recent_filled++];
-	snprintf(r->value, sizeof(r->value), "%s", value);
-	snprintf(r->path, sizeof(r->path), "%s", path);
-}
-
-static bool recent_album_row(const char *name, const char *path, const char *artist, void *user) {
+static bool first_row_path(const char *name, const char *path, const char *artist, void *user) {
+	(void)name;
 	(void)artist;
-	(void)user;
-	char value[256];
-	if (path && path[0] && library_track_album_value(path, value, sizeof(value))) recent_add(value, path);
-	else if (name && path) recent_add(name, path);
-	return recent_filled < RECENT_COUNT;
+	char *out = user;
+	if (path && path[0]) {
+		snprintf(out, 512, "%s", path);
+	}
+	return false; // one row is enough
 }
 
 // Collects the three covers as soon as the worker has them, rather than on the
@@ -523,53 +519,46 @@ static void recent_timer_kick(void) {
 	}
 }
 
-static void recent_paint(void) {
+static void recent_rebuild(void) {
+	if (!recents[0].tile) return;
+	recent_filled = RECENT_COUNT;
 	for (int i = 0; i < RECENT_COUNT; i++) {
 		recent_t *r = &recents[i];
-		bool used = i < recent_filled;
-		lv_obj_set_hidden(r->tile, !used);
-		if (!used) continue;
-		char title[256] = "", artist[256] = "";
-		library_album_title(r->value, title, sizeof(title));
-		library_album_artist(r->value, artist, sizeof(artist));
-		lv_label_set_text(r->title, title);
-		lv_label_set_text(r->artist, artist);
+		int count = 0;
+		char path[512] = "";
+		library_index_t *ix = library_index_open(HOME_LISTS[i].kind, LIBRARY_FILTER_NONE, NULL, LIBRARY_ORDER_DEFAULT, false);
+		if (ix) {
+			count = library_index_count(ix);
+			if (count > 0) {
+				// Favourites come oldest first: the newest is the last row.
+				int at = HOME_LISTS[i].kind == LIBRARY_LIST_FAVOURITES ? count - 1 : 0;
+				library_index_window(ix, at, 1, first_row_path, path);
+			}
+			library_index_close(ix);
+		}
+		lv_obj_set_hidden(r->tile, false);
+		lv_label_set_text(r->title, tr(HOME_LISTS[i].title));
+		char line[48];
+		snprintf(line, sizeof(line), tr("playlist_tracks"), count);
+		lv_label_set_text(r->artist, line);
+		// The cover only when its track changed: Home is entered often, and the
+		// counts are all that usually move.
+		if (strcmp(path, r->path) == 0 && (r->cover.pixels || r->waiting)) {
+			continue;
+		}
+		snprintf(r->path, sizeof(r->path), "%s", path);
 		lv_obj_set_hidden(r->image, true);
 		lv_obj_set_hidden(r->note, false);
 		lv_image_set_src(r->image, NULL);
 		cover_free(&r->cover);
-		coverloader_request(RECENT_SLOT_BASE + i, r->path, RECENT_SIZE);
-		r->waiting = true;
+		r->waiting = false;
+		if (path[0]) {
+			coverloader_request(RECENT_SLOT_BASE + i, path, RECENT_SIZE);
+			r->waiting = true;
+		}
 	}
 	recent_timer_kick();
-	if (recent_head) lv_obj_set_hidden(recent_head, recent_filled == 0);
-}
-
-static void recent_rebuild(void) {
-	if (!recents[0].tile) return;
-	long long revision = library_history_revision();
-	if (revision == recent_revision && recent_filled > 0) return;
-	recent_revision = revision;
-	recent_filled = 0;
-
-	library_history_item_t *items = NULL;
-	int count = library_history_items(&items);
-	for (int i = count - 1; i >= 0 && recent_filled < RECENT_COUNT && i >= count - 60; i--) {
-		char path[512], name[8], value[256];
-		if (library_history_entry(items[i].id, path, sizeof(path), name, sizeof(name)) &&
-			library_track_album_value(path, value, sizeof(value))) {
-			recent_add(value, path);
-		}
-	}
-	free(items);
-	if (recent_filled < RECENT_COUNT) {
-		library_index_t *ix = library_index_open(LIBRARY_LIST_ALBUMS, LIBRARY_FILTER_NONE, NULL, LIBRARY_ORDER_DEFAULT, false);
-		if (ix) {
-			library_index_window(ix, 0, 12, recent_album_row, NULL);
-			library_index_close(ix);
-		}
-	}
-	recent_paint();
+	if (recent_head) lv_obj_set_hidden(recent_head, false);
 }
 
 // Collects whatever the worker has finished. Called from the playback
@@ -596,18 +585,18 @@ static void recent_poll(void) {
 static void recent_cb(lv_event_t *event) {
 	if (gesture_active()) return;
 	recent_t *r = lv_event_get_user_data(event);
-	char title[256] = "";
-	library_album_title(r->value, title, sizeof(title));
-	medialist_open(title, LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ALBUM, r->value);
+	int i = (int)(r - recents);
+	if (i < 0 || i >= RECENT_COUNT) return;
+	medialist_open(tr(HOME_LISTS[i].title), HOME_LISTS[i].kind, LIBRARY_FILTER_NONE, NULL);
 }
 
-static void all_albums_cb(lv_event_t *event) {
+static void all_playlists_cb(lv_event_t *event) {
 	(void)event;
-	if (!gesture_active()) open_albums();
+	if (!gesture_active()) playlistpage_open();
 }
 
 static void make_recent(lv_obj_t *screen, gui_config_t *cfg, int top) {
-	// The section row: the label, and the way into every album.
+	// The section row: the label, and the way into every playlist.
 	lv_obj_t *head = lv_obj_create(screen);
 	lv_obj_remove_style_all(head);
 	lv_obj_set_size(head, cfg->screen_width - 2 * 12, 56);
@@ -616,7 +605,7 @@ static void make_recent(lv_obj_t *screen, gui_config_t *cfg, int top) {
 	lv_obj_set_clickable(head, false);
 	recent_head = head;
 	lv_obj_t *name = label(head, &font_ui_16_bold, true);
-	lv_label_set_text(name, tr("home_jump_back_in"));
+	lv_label_set_text(name, tr("home_playlists"));
 	lv_obj_set_style_text_letter_space(name, 1, 0);
 	lv_obj_set_style_text_opa(name, LV_OPA_80, 0);
 	lv_obj_align(name, LV_ALIGN_LEFT_MID, 8, 0);
@@ -625,9 +614,9 @@ static void make_recent(lv_obj_t *screen, gui_config_t *cfg, int top) {
 	lv_obj_set_size(all, LV_SIZE_CONTENT, 56);
 	lv_obj_set_style_pad_hor(all, 8, 0);
 	lv_obj_align(all, LV_ALIGN_RIGHT_MID, 0, 0);
-	lv_obj_add_event_cb(all, all_albums_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(all, all_playlists_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_t *all_text = label(all, &font_ui_18_bold, true);
-	lv_label_set_text(all_text, tr("home_all_albums"));
+	lv_label_set_text(all_text, tr("home_all_playlists"));
 	lv_obj_center(all_text);
 
 	int gap = 12;
