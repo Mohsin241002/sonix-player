@@ -362,6 +362,12 @@ static void lock_build(void) {
 	lv_obj_set_pos(lock, 0, 0);
 	lv_obj_set_scrollable(lock, false);
 	lv_obj_set_clickable(lock, false); // presses reach the saver, where the swipe lives
+	// And presses that land on a transport button have to reach it too: the
+	// button passes them up, and every layer between it and the saver must
+	// pass them on. Without that the saver never sees a press that starts on
+	// a button, never clears lock_dragged, and after one swipe to unlock every
+	// later tap on the buttons read as the end of a swipe and did nothing.
+	lv_obj_set_event_bubble(lock, true);
 	lv_obj_set_hidden(lock, true);
 
 	lock_date = lock_label(lock, &font_ui_18_bold, false);
@@ -384,6 +390,7 @@ static void lock_build(void) {
 	lv_obj_align(card, LV_ALIGN_BOTTOM_MID, 0, -88);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_clickable(card, false);
+	lv_obj_set_event_bubble(card, true); // see lock above
 
 	lv_obj_t *box = lv_obj_create(card);
 	lv_obj_remove_style_all(box);
@@ -462,6 +469,7 @@ static void lock_build(void) {
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(row, 28, 0);
 	lv_obj_set_clickable(row, false);
+	lv_obj_set_event_bubble(row, true); // see lock above
 	lv_obj_set_scrollable(row, false);
 	for (int action = -1; action <= 1; action++) {
 		lv_obj_t *button = lv_btn_create(row);
@@ -705,6 +713,7 @@ void screensaver_show(void) {
 	collect_next();
 	promote_next();
 	refresh_content();
+	lock_dragged = false; // a swipe from an earlier showing is long over
 	lv_anim_delete(saver, anim_y_cb);
 	lv_obj_set_y(saver, 0);
 	lv_obj_set_hidden(saver, false);
